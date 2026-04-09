@@ -75,30 +75,40 @@ pub struct SearchQueryParams {
 // ─── Router ──────────────────────────────────────────────────
 
 pub fn build_router(state: Arc<AppState>) -> Router {
-    let api_routes = Router::new()
-        .route("/workspaces", get(list_workspaces))
-        .route("/ws/{ws}/entities", get(list_entities))
-        .route("/ws/{ws}/entities/{name}", get(get_entity))
-        .route("/ws/{ws}/claims", get(list_claims))
-        .route("/ws/{ws}/relations", get(get_all_relations))
-        .route("/ws/{ws}/relations/{entity}", get(get_entity_relations))
-        .route("/ws/{ws}/artifacts", get(list_artifacts))
-        .route("/ws/{ws}/artifacts/{artifact_type}", get(get_artifact))
-        .route("/ws/{ws}/health", get(get_health))
-        .route("/ws/{ws}/search", get(search))
-        .route("/ws/{ws}/compile", post(compile))
-        .route("/ws/{ws}/verify", post(verify_ws));
+    build_router_opts(state, true, true)
+}
 
+pub fn build_router_opts(state: Arc<AppState>, enable_rest: bool, enable_mcp: bool) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let mcp_routes = crate::mcp::sse::build_router(state.clone());
+    let mut router = Router::new();
 
-    Router::new()
-        .nest("/api/v1", api_routes)
-        .nest("/mcp", mcp_routes)
+    if enable_rest {
+        let api_routes = Router::new()
+            .route("/workspaces", get(list_workspaces))
+            .route("/ws/{ws}/entities", get(list_entities))
+            .route("/ws/{ws}/entities/{name}", get(get_entity))
+            .route("/ws/{ws}/claims", get(list_claims))
+            .route("/ws/{ws}/relations", get(get_all_relations))
+            .route("/ws/{ws}/relations/{entity}", get(get_entity_relations))
+            .route("/ws/{ws}/artifacts", get(list_artifacts))
+            .route("/ws/{ws}/artifacts/{artifact_type}", get(get_artifact))
+            .route("/ws/{ws}/health", get(get_health))
+            .route("/ws/{ws}/search", get(search))
+            .route("/ws/{ws}/compile", post(compile))
+            .route("/ws/{ws}/verify", post(verify_ws));
+        router = router.nest("/api/v1", api_routes);
+    }
+
+    if enable_mcp {
+        let mcp_routes = crate::mcp::sse::build_router(state.clone());
+        router = router.nest("/mcp", mcp_routes);
+    }
+
+    router
         .layer(cors)
         .layer(middleware::from_fn_with_state(
             state.clone(),

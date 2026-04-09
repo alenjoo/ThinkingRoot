@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use thinkingroot_serve::engine::QueryEngine;
-use thinkingroot_serve::rest::{self, AppState};
+use thinkingroot_serve::rest::{AppState, build_router_opts};
 
 /// Launch the ThinkingRoot server (REST API + MCP).
 pub async fn run_serve(
@@ -13,9 +13,12 @@ pub async fn run_serve(
     api_key: Option<String>,
     paths: Vec<PathBuf>,
     mcp_stdio: bool,
-    _no_rest: bool,
-    _no_mcp: bool,
+    no_rest: bool,
+    no_mcp: bool,
 ) -> anyhow::Result<()> {
+    if no_rest && no_mcp {
+        anyhow::bail!("--no-rest and --no-mcp cannot be used together: nothing to serve");
+    }
     // Build query engine and mount workspaces.
     let mut engine = QueryEngine::new();
 
@@ -56,8 +59,12 @@ pub async fn run_serve(
 
     println!();
     println!("  ThinkingRoot v{}", env!("CARGO_PKG_VERSION"));
-    println!("  REST API:  http://{}:{}/api/v1/", host, port);
-    println!("  MCP SSE:   http://{}:{}/mcp/sse", host, port);
+    if !no_rest {
+        println!("  REST API:  http://{}:{}/api/v1/", host, port);
+    }
+    if !no_mcp {
+        println!("  MCP SSE:   http://{}:{}/mcp/sse", host, port);
+    }
     for ws in &workspaces {
         println!(
             "  Workspace: {} ({} entities, {} claims)",
@@ -73,7 +80,7 @@ pub async fn run_serve(
         api_key,
     });
 
-    let router = rest::build_router(state);
+    let router = build_router_opts(state, !no_rest, !no_mcp);
     let addr = format!("{}:{}", host, port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("server listening on {}", addr);
