@@ -1,0 +1,33 @@
+[package]
+name = "thinkingroot-parse"
+description = "Stage 1: Parsers for the ThinkingRoot compilation pipeline"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thinkingroot-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+blake3 = { workspace = true }
+pulldown-cmark = { workspace = true }
+tree-sitter = { workspace = true }
+ignore = { workspace = true }
+glob = { workspace = true }
+
+# Tree-sitter language grammars
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.23"
+tree-sitter-javascript = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-go = "0.23"
+
+pdf-extract = "0.7"
+
+[dev-dependencies]
+tempfile = "3"

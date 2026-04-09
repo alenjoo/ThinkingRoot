@@ -1,0 +1,20 @@
+[package]
+name = "thinkingroot-serve"
+description = "Stage 6: REST API and MCP server for ThinkingRoot"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thinkingroot-core = { workspace = true }
+thinkingroot-graph = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }

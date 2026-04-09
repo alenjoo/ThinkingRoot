@@ -1,0 +1,162 @@
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+use super::SourceId;
+
+/// Origin of knowledge — a file, URL, git commit, chat message, etc.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Source {
+    pub id: SourceId,
+    pub uri: String,
+    pub source_type: SourceType,
+    pub author: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub content_hash: ContentHash,
+    pub trust_level: TrustLevel,
+    pub byte_size: u64,
+    pub metadata: SourceMetadata,
+}
+
+impl Source {
+    pub fn new(uri: String, source_type: SourceType) -> Self {
+        Self {
+            id: SourceId::new(),
+            uri,
+            source_type,
+            author: None,
+            created_at: Utc::now(),
+            content_hash: ContentHash::empty(),
+            trust_level: TrustLevel::Unknown,
+            byte_size: 0,
+            metadata: SourceMetadata::default(),
+        }
+    }
+
+    pub fn with_author(mut self, author: impl Into<String>) -> Self {
+        self.author = Some(author.into());
+        self
+    }
+
+    pub fn with_trust(mut self, trust: TrustLevel) -> Self {
+        self.trust_level = trust;
+        self
+    }
+
+    pub fn with_id(mut self, id: SourceId) -> Self {
+        self.id = id;
+        self
+    }
+
+    pub fn with_hash(mut self, hash: ContentHash) -> Self {
+        self.content_hash = hash;
+        self
+    }
+
+    pub fn with_size(mut self, size: u64) -> Self {
+        self.byte_size = size;
+        self
+    }
+
+    /// Returns true if the content has changed since last processing.
+    pub fn content_changed(&self, new_hash: &ContentHash) -> bool {
+        self.content_hash != *new_hash
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceType {
+    File,
+    GitCommit,
+    GitDiff,
+    Document,
+    ChatMessage,
+    WebPage,
+    Api,
+    Manual,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustLevel {
+    Quarantined,
+    Untrusted,
+    Unknown,
+    Trusted,
+    Verified,
+}
+
+impl TrustLevel {
+    pub fn is_at_least(&self, minimum: TrustLevel) -> bool {
+        *self >= minimum
+    }
+}
+
+/// BLAKE3 content hash for change detection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContentHash(pub String);
+
+impl ContentHash {
+    pub fn from_bytes(data: &[u8]) -> Self {
+        Self(blake3::hash(data).to_hex().to_string())
+    }
+
+    pub fn empty() -> Self {
+        Self(String::new())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// Optional metadata attached to a source.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SourceMetadata {
+    /// For files: the file extension (e.g. "rs", "md").
+    pub file_extension: Option<String>,
+    /// For git: the commit SHA.
+    pub commit_sha: Option<String>,
+    /// For git: the branch name.
+    pub branch: Option<String>,
+    /// For web: the page title.
+    pub title: Option<String>,
+    /// Language of the content (for code files).
+    pub language: Option<String>,
+    /// Relative path within the repository.
+    pub relative_path: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn content_hash_detects_change() {
+        let h1 = ContentHash::from_bytes(b"hello");
+        let h2 = ContentHash::from_bytes(b"world");
+        let h3 = ContentHash::from_bytes(b"hello");
+        assert_ne!(h1, h2);
+        assert_eq!(h1, h3);
+    }
+
+    #[test]
+    fn trust_level_ordering() {
+        assert!(TrustLevel::Verified > TrustLevel::Unknown);
+        assert!(TrustLevel::Quarantined < TrustLevel::Untrusted);
+        assert!(TrustLevel::Trusted.is_at_least(TrustLevel::Unknown));
+        assert!(!TrustLevel::Unknown.is_at_least(TrustLevel::Trusted));
+    }
+
+    #[test]
+    fn source_builder_pattern() {
+        let src = Source::new("file:///test.rs".into(), SourceType::File)
+            .with_author("naveen")
+            .with_trust(TrustLevel::Verified)
+            .with_size(1024);
+
+        assert_eq!(src.author.as_deref(), Some("naveen"));
+        assert_eq!(src.trust_level, TrustLevel::Verified);
+        assert_eq!(src.byte_size, 1024);
+    }
+}

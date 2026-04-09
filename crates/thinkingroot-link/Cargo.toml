@@ -1,0 +1,19 @@
+[package]
+name = "thinkingroot-link"
+description = "Stage 3: Entity resolution and knowledge graph linking for ThinkingRoot"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thinkingroot-core = { workspace = true }
+thinkingroot-graph = { workspace = true }
+thinkingroot-extract = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+strsim = { workspace = true }

@@ -1,0 +1,34 @@
+[package]
+name = "thinkingroot-cli"
+description = "CLI binary for ThinkingRoot — the knowledge compiler"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "root"
+path = "src/main.rs"
+
+[dependencies]
+thinkingroot-core = { workspace = true }
+thinkingroot-graph = { workspace = true }
+thinkingroot-parse = { workspace = true }
+thinkingroot-extract = { workspace = true }
+thinkingroot-link = { workspace = true }
+thinkingroot-compile = { workspace = true }
+thinkingroot-verify = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+indicatif = { workspace = true }
+console = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

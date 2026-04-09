@@ -1,0 +1,105 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/thinkingroot-core",
+    "crates/thinkingroot-graph",
+    "crates/thinkingroot-parse",
+    "crates/thinkingroot-extract",
+    "crates/thinkingroot-link",
+    "crates/thinkingroot-compile",
+    "crates/thinkingroot-verify",
+    "crates/thinkingroot-serve",
+    "crates/thinkingroot-safety",
+    "crates/thinkingroot-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["Naveen <naveen@thinkingroot.dev>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/thinkingroot/thinkingroot"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# Internal crates
+thinkingroot-core = { path = "crates/thinkingroot-core" }
+thinkingroot-graph = { path = "crates/thinkingroot-graph" }
+thinkingroot-parse = { path = "crates/thinkingroot-parse" }
+thinkingroot-extract = { path = "crates/thinkingroot-extract" }
+thinkingroot-link = { path = "crates/thinkingroot-link" }
+thinkingroot-compile = { path = "crates/thinkingroot-compile" }
+thinkingroot-verify = { path = "crates/thinkingroot-verify" }
+thinkingroot-serve = { path = "crates/thinkingroot-serve" }
+thinkingroot-safety = { path = "crates/thinkingroot-safety" }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rmp-serde = "1.3"
+
+# Async
+tokio = { version = "1.51", features = ["full"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging / Tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# IDs
+ulid = { version = "1", features = ["serde"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Hashing
+blake3 = "1"
+
+# Config
+toml = "0.8"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+indicatif = "0.17"
+console = "0.15"
+
+# Graph DB (Datalog-based, embedded, community edition)
+cozo = { package = "cozo-ce", version = "0.7.13-alpha.3", default-features = false, features = ["minimal", "rayon"] }
+
+# Parsing
+pulldown-cmark = "0.13"
+tree-sitter = "0.26"
+
+# LLM (multi-provider via our own trait)
+reqwest = { version = "0.12", features = ["json"] }
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-bedrockruntime = "1"
+
+# Templates
+tera = "1"
+
+# HTTP (for serve)
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# Misc
+uuid = { version = "1", features = ["v4", "serde"] }
+url = { version = "2", features = ["serde"] }
+regex = "1"
+glob = "0.3"
+ignore = "0.4"
+strsim = "0.11"
+ordered-float = { version = "5", features = ["serde"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+
+[profile.dev]
+opt-level = 0
+debug = true
