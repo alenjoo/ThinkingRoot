@@ -9,7 +9,7 @@ pub struct Verifier {
     staleness_days: u32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct VerificationResult {
     pub health_score: HealthScore,
     pub stale_claims: usize,

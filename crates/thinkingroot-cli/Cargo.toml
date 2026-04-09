@@ -19,6 +19,7 @@ thinkingroot-extract = { workspace = true }
 thinkingroot-link = { workspace = true }
 thinkingroot-compile = { workspace = true }
 thinkingroot-verify = { workspace = true }
+thinkingroot-serve = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
