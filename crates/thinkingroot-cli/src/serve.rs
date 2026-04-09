@@ -39,11 +39,14 @@ pub async fn run_serve(
     }
 
     if mcp_stdio {
-        // MCP stdio mode: read JSON-RPC from stdin, write to stdout.
-        // Implemented in Task 5.
-        tracing::info!("MCP stdio mode — reading from stdin");
-        // TODO: Wire up MCP stdio transport (Task 5)
-        eprintln!("MCP stdio transport not yet implemented");
+        eprintln!("ThinkingRoot MCP stdio server v{}", env!("CARGO_PKG_VERSION"));
+        let workspaces = engine.list_workspaces().await?;
+        for ws in &workspaces {
+            eprintln!("  Workspace: {} ({} entities, {} claims)", ws.name, ws.entity_count, ws.claim_count);
+        }
+        let default_ws = workspaces.first().map(|w| w.name.clone());
+        let engine = Arc::new(RwLock::new(engine));
+        thinkingroot_serve::mcp::stdio::run(engine, default_ws).await;
         return Ok(());
     }
 
