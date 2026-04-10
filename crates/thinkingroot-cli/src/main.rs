@@ -40,6 +40,9 @@ enum Commands {
     Compile {
         /// Path to the directory to compile
         path: PathBuf,
+        /// Compile into a specific branch instead of main
+        #[arg(long)]
+        branch: Option<String>,
     },
     /// Show the knowledge health score
     Health {
@@ -102,6 +105,9 @@ enum Commands {
         /// Generate and install an OS-native service file (launchd/systemd/Windows)
         #[arg(long)]
         install_service: bool,
+        /// Serve a specific branch instead of main
+        #[arg(long)]
+        branch: Option<String>,
     },
     /// First-time guided setup wizard
     Setup,
@@ -233,8 +239,8 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     match cli.command {
-        Some(Commands::Compile { path }) => {
-            run_compile(&path).await?;
+        Some(Commands::Compile { path, branch }) => {
+            run_compile(&path, branch.as_deref()).await?;
         }
         Some(Commands::Health { path }) => {
             run_health(&path).await?;
@@ -258,12 +264,13 @@ async fn main() -> anyhow::Result<()> {
             no_rest,
             no_mcp,
             install_service,
+            branch,
         }) => {
             if install_service {
                 serve::install_service()?;
                 return Ok(());
             }
-            serve::run_serve(port, host, api_key, paths, name, mcp_stdio, no_rest, no_mcp).await?;
+            serve::run_serve(port, host, api_key, paths, name, mcp_stdio, no_rest, no_mcp, branch).await?;
         }
         Some(Commands::Setup) => {
             setup::run_setup().await?;
@@ -308,10 +315,10 @@ async fn main() -> anyhow::Result<()> {
         None => {
             // `root ./path` shorthand — same as `root compile ./path`.
             if let Some(path) = cli.path {
-                run_compile(&path).await?;
+                run_compile(&path, None).await?;
             } else {
                 // No args: compile current directory.
-                run_compile(&PathBuf::from(".")).await?;
+                run_compile(&PathBuf::from("."), None).await?;
             }
         }
     }
@@ -319,7 +326,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run_compile(path: &PathBuf) -> anyhow::Result<()> {
+async fn run_compile(path: &PathBuf, branch: Option<&str>) -> anyhow::Result<()> {
     let path = std::fs::canonicalize(path)
         .with_context(|| format!("path not found: {}", path.display()))?;
 
@@ -331,7 +338,7 @@ async fn run_compile(path: &PathBuf) -> anyhow::Result<()> {
     );
 
     let start = Instant::now();
-    let result = pipeline::run_pipeline(&path).await?;
+    let result = pipeline::run_pipeline(&path, branch).await?;
 
     let elapsed = start.elapsed();
     println!();

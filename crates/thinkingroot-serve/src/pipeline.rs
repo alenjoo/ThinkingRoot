@@ -19,9 +19,9 @@ pub struct PipelineResult {
     pub early_cutoffs: usize,
 }
 
-pub async fn run_pipeline(root_path: &Path) -> Result<PipelineResult> {
+pub async fn run_pipeline(root_path: &Path, branch: Option<&str>) -> Result<PipelineResult> {
     let config = Config::load_merged(root_path)?;
-    let data_dir = root_path.join(&config.workspace.data_dir);
+    let data_dir = thinkingroot_branch::snapshot::resolve_data_dir(root_path, branch);
     std::fs::create_dir_all(&data_dir)?;
 
     let documents = thinkingroot_parse::parse_directory(root_path, &config.parsers)?;
