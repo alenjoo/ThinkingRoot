@@ -34,6 +34,8 @@ dirs = { workspace = true }
 dialoguer = { workspace = true }
 axum = { workspace = true }
 reqwest = { workspace = true }
+notify = { workspace = true }
+notify-debouncer-mini = { workspace = true }
 
 [features]
 ## Enable neural embedding for semantic search. On by default; disable with

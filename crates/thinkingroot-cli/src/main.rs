@@ -10,6 +10,7 @@ mod mcp_config;
 mod pipeline;
 mod serve;
 mod setup;
+mod watch;
 mod workspace;
 
 #[derive(Parser)]
@@ -123,6 +124,12 @@ enum Commands {
         #[arg(long)]
         remove: bool,
     },
+    /// Watch for changes and recompile incrementally
+    Watch {
+        /// Path to the directory to watch
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -212,6 +219,11 @@ async fn main() -> anyhow::Result<()> {
         },
         Some(Commands::Connect { tool, port, dry_run, remove }) => {
             mcp_config::run_connect(tool.as_deref(), port, dry_run, remove)?;
+        }
+        Some(Commands::Watch { path }) => {
+            let path = std::fs::canonicalize(&path)
+                .with_context(|| format!("path not found: {}", path.display()))?;
+            watch::run_watch(&path).await?;
         }
         None => {
             // `root ./path` shorthand — same as `root compile ./path`.
