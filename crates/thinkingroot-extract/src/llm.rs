@@ -1,4 +1,4 @@
-use thinkingroot_core::config::LlmConfig;
+use thinkingroot_core::config::{LlmConfig, ProviderConfig};
 use thinkingroot_core::{Error, Result};
 
 use crate::prompts;
@@ -46,14 +46,20 @@ impl BedrockProvider {
 
     async fn chat(&self, system: &str, user: &str) -> Result<String> {
         use aws_sdk_bedrockruntime::types::{
-            ContentBlock, ConversationRole, Message, SystemContentBlock,
+            ContentBlock, ConversationRole, InferenceConfiguration, Message, SystemContentBlock,
         };
 
+        tracing::debug!("bedrock: sending request to {} (input ~{} chars)", self.model, user.len());
         let response = self
             .client
             .converse()
             .model_id(&self.model)
             .system(SystemContentBlock::Text(system.to_string()))
+            .inference_config(
+                InferenceConfiguration::builder()
+                    .max_tokens(4096)
+                    .build(),
+            )
             .messages(
                 Message::builder()
                     .role(ConversationRole::User)
@@ -70,6 +76,7 @@ impl BedrockProvider {
                 provider: format!("bedrock/{}", self.model),
                 message: e.to_string(),
             })?;
+        tracing::debug!("bedrock: got response");
 
         let output = response.output().ok_or_else(|| Error::LlmProvider {
             provider: "bedrock".into(),
@@ -261,6 +268,37 @@ impl OllamaProvider {
     }
 }
 
+// ── Provider config helpers ──────────────────────────────────────
+
+fn resolve_key(cfg: Option<&ProviderConfig>, default_env: &str) -> Result<String> {
+    let env_var = cfg
+        .and_then(|p| p.api_key_env.as_deref())
+        .unwrap_or(default_env);
+    std::env::var(env_var).map_err(|_| Error::MissingConfig(
+        format!("set the {} environment variable", env_var)
+    ))
+}
+
+fn resolve_key_optional(cfg: Option<&ProviderConfig>) -> String {
+    cfg.and_then(|p| p.api_key_env.as_deref())
+        .and_then(|env| std::env::var(env).ok())
+        .unwrap_or_default()
+}
+
+fn resolve_base_url(cfg: Option<&ProviderConfig>, default: &str) -> String {
+    cfg.and_then(|p| p.base_url.as_deref())
+        .unwrap_or(default)
+        .to_string()
+}
+
+fn resolve_base_url_required(cfg: Option<&ProviderConfig>, provider: &str) -> Result<String> {
+    cfg.and_then(|p| p.base_url.as_deref())
+        .map(|s| s.to_string())
+        .ok_or_else(|| Error::MissingConfig(
+            format!("set [llm.providers.{provider}].base_url in your config")
+        ))
+}
+
 // ── LLM Client (unified wrapper with retry) ─────────────────────
 
 pub struct LlmClient {
@@ -282,79 +320,80 @@ impl LlmClient {
                 Provider::Bedrock(BedrockProvider::new(&config.extraction_model, region).await?)
             }
             "openai" => {
-                let api_key_env = config
-                    .providers
-                    .openai
-                    .as_ref()
-                    .and_then(|p| p.api_key_env.as_deref())
-                    .unwrap_or("OPENAI_API_KEY");
-                let key = std::env::var(api_key_env).map_err(|_| {
-                    Error::MissingConfig(format!("set {api_key_env} env var"))
-                })?;
-                let base_url = config
-                    .providers
-                    .openai
-                    .as_ref()
-                    .and_then(|p| p.base_url.as_deref())
-                    .unwrap_or("https://api.openai.com");
-                Provider::OpenAi(OpenAiProvider::new(&key, &config.extraction_model, base_url))
+                let key = resolve_key(config.providers.openai.as_ref(), "OPENAI_API_KEY")?;
+                let base_url = resolve_base_url(
+                    config.providers.openai.as_ref(),
+                    "https://api.openai.com",
+                );
+                Provider::OpenAi(OpenAiProvider::new(&key, &config.extraction_model, &base_url))
             }
             "anthropic" => {
-                let api_key_env = config
-                    .providers
-                    .anthropic
-                    .as_ref()
-                    .and_then(|p| p.api_key_env.as_deref())
-                    .unwrap_or("ANTHROPIC_API_KEY");
-                let key = std::env::var(api_key_env).map_err(|_| {
-                    Error::MissingConfig(format!("set {api_key_env} env var"))
-                })?;
+                let key = resolve_key(config.providers.anthropic.as_ref(), "ANTHROPIC_API_KEY")?;
                 Provider::Anthropic(AnthropicProvider::new(&key, &config.extraction_model))
             }
             "ollama" => {
-                let base_url = config
-                    .providers
-                    .ollama
-                    .as_ref()
-                    .and_then(|p| p.base_url.as_deref())
-                    .unwrap_or("http://localhost:11434");
-                Provider::Ollama(OllamaProvider::new(&config.extraction_model, base_url))
+                let base_url = resolve_base_url(
+                    config.providers.ollama.as_ref(),
+                    "http://localhost:11434",
+                );
+                Provider::Ollama(OllamaProvider::new(&config.extraction_model, &base_url))
             }
             "groq" => {
-                let api_key_env = config
-                    .providers
-                    .groq
-                    .as_ref()
-                    .and_then(|p| p.api_key_env.as_deref())
-                    .unwrap_or("GROQ_API_KEY");
-                let key = std::env::var(api_key_env).map_err(|_| {
-                    Error::MissingConfig(format!("set {api_key_env} env var"))
-                })?;
-                Provider::OpenAi(OpenAiProvider::new(
-                    &key,
-                    &config.extraction_model,
+                let key = resolve_key(config.providers.groq.as_ref(), "GROQ_API_KEY")?;
+                let base_url = resolve_base_url(
+                    config.providers.groq.as_ref(),
                     "https://api.groq.com/openai",
-                ))
+                );
+                Provider::OpenAi(OpenAiProvider::new(&key, &config.extraction_model, &base_url))
             }
             "deepseek" => {
-                let api_key_env = config
-                    .providers
-                    .deepseek
-                    .as_ref()
-                    .and_then(|p| p.api_key_env.as_deref())
-                    .unwrap_or("DEEPSEEK_API_KEY");
-                let key = std::env::var(api_key_env).map_err(|_| {
-                    Error::MissingConfig(format!("set {api_key_env} env var"))
-                })?;
-                Provider::OpenAi(OpenAiProvider::new(
-                    &key,
-                    &config.extraction_model,
+                let key = resolve_key(config.providers.deepseek.as_ref(), "DEEPSEEK_API_KEY")?;
+                let base_url = resolve_base_url(
+                    config.providers.deepseek.as_ref(),
                     "https://api.deepseek.com",
-                ))
+                );
+                Provider::OpenAi(OpenAiProvider::new(&key, &config.extraction_model, &base_url))
+            }
+            "openrouter" => {
+                let key = resolve_key(config.providers.openrouter.as_ref(), "OPENROUTER_API_KEY")?;
+                let base_url = resolve_base_url(
+                    config.providers.openrouter.as_ref(),
+                    "https://openrouter.ai/api/v1",
+                );
+                Provider::OpenAi(OpenAiProvider::new(&key, &config.extraction_model, &base_url))
+            }
+            "together" => {
+                let key = resolve_key(config.providers.together.as_ref(), "TOGETHER_API_KEY")?;
+                let base_url = resolve_base_url(
+                    config.providers.together.as_ref(),
+                    "https://api.together.xyz/v1",
+                );
+                Provider::OpenAi(OpenAiProvider::new(&key, &config.extraction_model, &base_url))
+            }
+            "perplexity" => {
+                let key = resolve_key(config.providers.perplexity.as_ref(), "PERPLEXITY_API_KEY")?;
+                let base_url = resolve_base_url(
+                    config.providers.perplexity.as_ref(),
+                    "https://api.perplexity.ai",
+                );
+                Provider::OpenAi(OpenAiProvider::new(&key, &config.extraction_model, &base_url))
+            }
+            "litellm" => {
+                let key = resolve_key_optional(config.providers.litellm.as_ref());
+                let base_url = resolve_base_url(
+                    config.providers.litellm.as_ref(),
+                    "http://localhost:4000",
+                );
+                Provider::OpenAi(OpenAiProvider::new(&key, &config.extraction_model, &base_url))
+            }
+            "custom" => {
+                let key = resolve_key(config.providers.custom.as_ref(), "CUSTOM_LLM_API_KEY")?;
+                let base_url = resolve_base_url_required(config.providers.custom.as_ref(), "custom")?;
+                Provider::OpenAi(OpenAiProvider::new(&key, &config.extraction_model, &base_url))
             }
             other => {
                 return Err(Error::MissingConfig(format!(
-                    "unsupported provider: {other}. Use: bedrock, openai, anthropic, ollama, groq, deepseek"
+                    "unsupported provider: {other}. Supported: bedrock, openai, anthropic, ollama, groq, deepseek, openrouter, together, perplexity, litellm, custom"
                 )));
             }
         };
@@ -383,7 +422,11 @@ impl LlmClient {
         let mut last_error = None;
 
         for attempt in 0..self.max_retries {
-            match self.provider.chat(prompts::SYSTEM_PROMPT, &user_prompt).await {
+            match self
+                .provider
+                .chat(prompts::SYSTEM_PROMPT, &user_prompt)
+                .await
+            {
                 Ok(text) => match parse_extraction_result(&text) {
                     Ok(result) => return Ok(result),
                     Err(e) => {
@@ -461,6 +504,44 @@ fn extract_json_from_text(text: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_key_uses_default_env_when_config_is_none() {
+        unsafe { std::env::set_var("TEST_DEFAULT_KEY", "mykey"); }
+        let result = resolve_key(None, "TEST_DEFAULT_KEY").unwrap();
+        assert_eq!(result, "mykey");
+        unsafe { std::env::remove_var("TEST_DEFAULT_KEY"); }
+    }
+
+    #[test]
+    fn resolve_key_uses_config_env_when_set() {
+        unsafe { std::env::set_var("MY_CUSTOM_ENV", "customkey"); }
+        let cfg = thinkingroot_core::config::ProviderConfig {
+            api_key_env: Some("MY_CUSTOM_ENV".to_string()),
+            base_url: None,
+            default_model: None,
+        };
+        let result = resolve_key(Some(&cfg), "IGNORED_DEFAULT").unwrap();
+        assert_eq!(result, "customkey");
+        unsafe { std::env::remove_var("MY_CUSTOM_ENV"); }
+    }
+
+    #[test]
+    fn resolve_base_url_returns_default_when_config_has_none() {
+        let result = resolve_base_url(None, "https://default.example.com");
+        assert_eq!(result, "https://default.example.com");
+    }
+
+    #[test]
+    fn resolve_base_url_returns_config_url_when_set() {
+        let cfg = thinkingroot_core::config::ProviderConfig {
+            api_key_env: None,
+            base_url: Some("https://custom.example.com".to_string()),
+            default_model: None,
+        };
+        let result = resolve_base_url(Some(&cfg), "https://default.example.com");
+        assert_eq!(result, "https://custom.example.com");
+    }
 
     #[test]
     fn parse_valid_json() {

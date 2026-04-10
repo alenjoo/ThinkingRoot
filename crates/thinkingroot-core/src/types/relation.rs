@@ -60,7 +60,7 @@ impl Relation {
     }
 
     pub fn is_active(&self) -> bool {
-        self.valid_until.map_or(true, |until| until > Utc::now())
+        self.valid_until.is_none_or(|until| until > Utc::now())
     }
 }
 
@@ -104,8 +104,7 @@ mod tests {
     fn relation_evidence_strengthens() {
         let e1 = EntityId::new();
         let e2 = EntityId::new();
-        let mut rel = Relation::new(e1, e2, RelationType::DependsOn)
-            .with_strength(0.5);
+        let mut rel = Relation::new(e1, e2, RelationType::DependsOn).with_strength(0.5);
 
         let c1 = ClaimId::new();
         let c2 = ClaimId::new();

@@ -3,6 +3,7 @@ use std::path::Path;
 
 use chrono;
 use cozo::{DataValue, DbInstance, NamedRows, Num, ScriptMutability};
+use thinkingroot_core::types::{Entity, EntityType};
 use thinkingroot_core::{Error, Result};
 
 /// Graph storage backed by CozoDB — an embedded Datalog database.
@@ -72,6 +73,14 @@ impl GraphStore {
                 =>
                 strength: Float default 1.0
             }",
+            ":create source_entity_relations {
+                source_id: String,
+                from_id: String,
+                to_id: String,
+                relation_type: String
+                =>
+                strength: Float default 1.0
+            }",
             ":create claim_temporal {
                 claim_id: String
                 =>
@@ -88,6 +97,10 @@ impl GraphStore {
                 status: String default 'Detected',
                 detected_at: Float default 0.0
             }",
+            ":create entity_aliases {
+                entity_id: String,
+                alias: String
+            }",
         ];
 
         for stmt in &relations {
@@ -96,7 +109,9 @@ impl GraphStore {
                 Err(e) => {
                     let msg = e.to_string();
                     // Ignore "already exists" errors on re-init.
-                    if !msg.contains("already exists") && !msg.contains("conflicts with an existing") {
+                    if !msg.contains("already exists")
+                        && !msg.contains("conflicts with an existing")
+                    {
                         return Err(Error::GraphStorage(format!(
                             "schema creation failed: {msg}"
                         )));
@@ -159,6 +174,33 @@ impl GraphStore {
         Ok(())
     }
 
+    /// Find all source rows for a URI. Multiple rows may exist from older duplicate compiles.
+    pub fn find_sources_by_uri(&self, uri: &str) -> Result<Vec<(String, String, String)>> {
+        let mut params = BTreeMap::new();
+        params.insert("uri".into(), DataValue::Str(uri.into()));
+
+        let result = self
+            .db
+            .run_script(
+                "?[id, content_hash, source_type] := *sources{id, uri: $uri, content_hash, source_type}",
+                params,
+                ScriptMutability::Immutable,
+            )
+            .map_err(|e| Error::GraphStorage(format!("query failed: {e}")))?;
+
+        Ok(result
+            .rows
+            .iter()
+            .map(|row| {
+                (
+                    dv_to_string(&row[0]),
+                    dv_to_string(&row[1]),
+                    dv_to_string(&row[2]),
+                )
+            })
+            .collect())
+    }
+
     /// Insert a claim node.
     pub fn insert_claim(&self, claim: &thinkingroot_core::Claim) -> Result<()> {
         let mut params = BTreeMap::new();
@@ -202,7 +244,7 @@ impl GraphStore {
         Ok(())
     }
 
-    /// Insert an entity node.
+    /// Insert an entity node and persist its aliases.
     pub fn insert_entity(&self, entity: &thinkingroot_core::Entity) -> Result<()> {
         let mut params = BTreeMap::new();
         params.insert("id".into(), DataValue::Str(entity.id.to_string().into()));
@@ -224,7 +266,69 @@ impl GraphStore {
             :put entities {id => canonical_name, entity_type, description}"#,
             params,
         )?;
+
+        // Persist each alias. `:put` is an upsert so duplicates are safe.
+        for alias in &entity.aliases {
+            let mut p = BTreeMap::new();
+            p.insert("eid".into(), DataValue::Str(entity.id.to_string().into()));
+            p.insert("alias".into(), DataValue::Str(alias.clone().into()));
+            self.query(
+                r#"?[entity_id, alias] <- [[$eid, $alias]]
+                :put entity_aliases {entity_id, alias}"#,
+                p,
+            )?;
+        }
+
         Ok(())
+    }
+
+    /// Load all persisted entities with aliases for cross-run entity resolution.
+    pub fn get_entities_with_aliases(&self) -> Result<Vec<Entity>> {
+        let result = self.query_read(
+            "?[id, canonical_name, entity_type, description] := *entities{id, canonical_name, entity_type, description}",
+        )?;
+
+        let mut entities = Vec::with_capacity(result.rows.len());
+
+        for row in &result.rows {
+            let id = dv_to_string(&row[0]);
+            let canonical_name = dv_to_string(&row[1]);
+            let entity_type = parse_entity_type(&dv_to_string(&row[2]));
+            let description = dv_to_string(&row[3]);
+
+            let mut entity = Entity::new(canonical_name, entity_type);
+            entity.id = id
+                .parse()
+                .map_err(|e| Error::GraphStorage(format!("invalid entity id '{id}': {e}")))?;
+            entity.aliases = self.get_aliases_for_entity(&id)?;
+            if !description.is_empty() {
+                entity.description = Some(description);
+            }
+            entities.push(entity);
+        }
+
+        Ok(entities)
+    }
+
+    /// Get all aliases for a given entity ID.
+    pub fn get_aliases_for_entity(&self, entity_id: &str) -> Result<Vec<String>> {
+        let mut params = BTreeMap::new();
+        params.insert("eid".into(), DataValue::Str(entity_id.into()));
+
+        let result = self
+            .db
+            .run_script(
+                "?[alias] := *entity_aliases{entity_id: $eid, alias}",
+                params,
+                ScriptMutability::Immutable,
+            )
+            .map_err(|e| Error::GraphStorage(format!("query failed: {e}")))?;
+
+        Ok(result
+            .rows
+            .iter()
+            .map(|row| dv_to_string(&row[0]))
+            .collect())
     }
 
     /// Create a relationship between a claim and its source.
@@ -277,6 +381,146 @@ impl GraphStore {
         Ok(())
     }
 
+    /// Persist a relation edge scoped to the source that produced it.
+    pub fn link_entities_for_source(
+        &self,
+        source_id: &str,
+        from_id: &str,
+        to_id: &str,
+        relation_type: &str,
+        strength: f64,
+    ) -> Result<()> {
+        let mut params = BTreeMap::new();
+        params.insert("sid".into(), DataValue::Str(source_id.into()));
+        params.insert("fid".into(), DataValue::Str(from_id.into()));
+        params.insert("tid".into(), DataValue::Str(to_id.into()));
+        params.insert("rtype".into(), DataValue::Str(relation_type.into()));
+        params.insert("str".into(), DataValue::Num(Num::Float(strength)));
+
+        self.query(
+            r#"?[source_id, from_id, to_id, relation_type, strength] <- [[$sid, $fid, $tid, $rtype, $str]]
+            :put source_entity_relations {source_id, from_id, to_id, relation_type => strength}"#,
+            params,
+        )?;
+        Ok(())
+    }
+
+    /// Rebuild the aggregated entity relation view from source-scoped relations.
+    pub fn rebuild_entity_relations(&self) -> Result<()> {
+        self.clear_entity_relations()?;
+
+        let result = self
+            .db
+            .run_script(
+                "?[from_id, to_id, relation_type, max(strength)] := *source_entity_relations{source_id, from_id, to_id, relation_type, strength}",
+                BTreeMap::new(),
+                ScriptMutability::Immutable,
+            )
+            .map_err(|e| Error::GraphStorage(format!("query failed: {e}")))?;
+
+        for row in &result.rows {
+            let from_id = dv_to_string(&row[0]);
+            let to_id = dv_to_string(&row[1]);
+            let relation_type = dv_to_string(&row[2]);
+            let strength = match &row[3] {
+                DataValue::Num(Num::Float(f)) => *f,
+                DataValue::Num(Num::Int(i)) => *i as f64,
+                _ => 1.0,
+            };
+            self.link_entities(&from_id, &to_id, &relation_type, strength)?;
+        }
+
+        Ok(())
+    }
+
+    /// Get (from_id, to_id, relation_type) triples contributed by a specific source.
+    /// Used to capture affected triples before source removal for incremental updates.
+    pub fn get_source_relation_triples(
+        &self,
+        source_id: &str,
+    ) -> Result<Vec<(String, String, String)>> {
+        let mut params = BTreeMap::new();
+        params.insert("sid".into(), DataValue::Str(source_id.into()));
+
+        let result = self
+            .db
+            .run_script(
+                "?[from_id, to_id, relation_type] := *source_entity_relations{source_id: $sid, from_id, to_id, relation_type}",
+                params,
+                ScriptMutability::Immutable,
+            )
+            .map_err(|e| Error::GraphStorage(format!("query failed: {e}")))?;
+
+        Ok(result
+            .rows
+            .iter()
+            .map(|row| {
+                (
+                    dv_to_string(&row[0]),
+                    dv_to_string(&row[1]),
+                    dv_to_string(&row[2]),
+                )
+            })
+            .collect())
+    }
+
+    /// Incrementally update entity_relations for specific (from, to, rel_type) triples.
+    /// Removes the stale aggregated edge, then re-aggregates from source_entity_relations.
+    /// If no source still contributes a triple, the aggregated edge stays deleted.
+    ///
+    /// Note: the re-aggregation query scans source_entity_relations per triple because
+    /// (from_id, to_id, relation_type) is not a key prefix (source_id leads the key).
+    /// For graphs with many source-relation rows, callers should batch affected triples.
+    ///
+    /// If the same triple appears multiple times in `triples`, each occurrence is
+    /// processed independently (idempotent result, redundant work). Callers that
+    /// accumulate triples from multiple sources should deduplicate before calling.
+    pub fn update_entity_relations_for_triples(
+        &self,
+        triples: &[(String, String, String)],
+    ) -> Result<()> {
+        for (from_id, to_id, relation_type) in triples {
+            // Remove stale aggregated edge.
+            let mut params = BTreeMap::new();
+            params.insert("fid".into(), DataValue::Str(from_id.clone().into()));
+            params.insert("tid".into(), DataValue::Str(to_id.clone().into()));
+            params.insert(
+                "rtype".into(),
+                DataValue::Str(relation_type.clone().into()),
+            );
+            self.query(
+                r#"?[from_id, to_id, relation_type] <- [[$fid, $tid, $rtype]]
+                :rm entity_relations {from_id, to_id, relation_type}"#,
+                params.clone(),
+            )?;
+
+            // Re-aggregate: if any source still contributes this triple, re-insert.
+            let result = self
+                .db
+                .run_script(
+                    "?[max(strength)] := *source_entity_relations{from_id: $fid, to_id: $tid, relation_type: $rtype, strength}",
+                    params,
+                    ScriptMutability::Immutable,
+                )
+                .map_err(|e| Error::GraphStorage(format!("query failed: {e}")))?;
+
+            if let Some(row) = result.rows.first() {
+                let strength = match &row[0] {
+                    DataValue::Num(Num::Float(f)) => *f,
+                    DataValue::Num(Num::Int(i)) => *i as f64,
+                    _ => {
+                        tracing::warn!(
+                            "unexpected strength type for triple ({from_id}, {to_id}, {relation_type}), skipping re-insert"
+                        );
+                        continue;
+                    }
+                };
+                self.link_entities(from_id, to_id, relation_type, strength)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Query all entities.
     pub fn get_all_entities(&self) -> Result<Vec<(String, String, String)>> {
         let result = self.query_read(
@@ -296,12 +540,27 @@ impl GraphStore {
             .collect())
     }
 
+    /// Remove all graph state derived from a source URI.
+    pub fn remove_source_by_uri(&self, uri: &str) -> Result<usize> {
+        let sources = self.find_sources_by_uri(uri)?;
+        if sources.is_empty() {
+            return Ok(0);
+        }
+
+        for (source_id, _, _) in &sources {
+            self.remove_source_by_id(source_id)?;
+        }
+
+        Ok(sources.len())
+    }
+
     /// Query all claims for a given entity (Datalog join).
     pub fn get_claims_for_entity(&self, entity_id: &str) -> Result<Vec<(String, String, String)>> {
         let mut params = BTreeMap::new();
         params.insert("eid".into(), DataValue::Str(entity_id.into()));
 
-        let result = self.db
+        let result = self
+            .db
             .run_script(
                 r#"?[id, statement, claim_type] :=
                     *claim_entity_edges{claim_id: id, entity_id: $eid},
@@ -353,6 +612,7 @@ impl GraphStore {
     }
 
     /// Get all contradictions.
+    #[allow(clippy::type_complexity)]
     pub fn get_contradictions(&self) -> Result<Vec<(String, String, String, String, String)>> {
         let result = self.query_read(
             "?[id, claim_a, claim_b, explanation, status] := *contradictions{id, claim_a, claim_b, explanation, status}",
@@ -373,6 +633,7 @@ impl GraphStore {
     }
 
     /// Get claims for a specific entity with their source URIs (Datalog 3-way join).
+    #[allow(clippy::type_complexity)]
     pub fn get_claims_with_sources_for_entity(
         &self,
         entity_id: &str,
@@ -412,6 +673,7 @@ impl GraphStore {
     }
 
     /// Get all entity relations (for architecture map).
+    #[allow(clippy::type_complexity)]
     pub fn get_all_relations(&self) -> Result<Vec<(String, String, String, String, String, f64)>> {
         let result = self.query_read(
             r#"?[from_name, to_name, rel_type, from_type, to_type, strength] :=
@@ -443,7 +705,10 @@ impl GraphStore {
     /// Count stale claims (created_at older than cutoff_timestamp).
     pub fn count_stale_claims(&self, cutoff_timestamp: f64) -> Result<usize> {
         let mut params = BTreeMap::new();
-        params.insert("cutoff".into(), DataValue::Num(Num::Float(cutoff_timestamp)));
+        params.insert(
+            "cutoff".into(),
+            DataValue::Num(Num::Float(cutoff_timestamp)),
+        );
 
         let result = self
             .db
@@ -491,7 +756,11 @@ impl GraphStore {
     }
 
     /// Get all claims of a specific type (e.g., "Decision", "Requirement").
-    pub fn get_claims_by_type(&self, claim_type: &str) -> Result<Vec<(String, String, String, f64, String)>> {
+    #[allow(clippy::type_complexity)]
+    pub fn get_claims_by_type(
+        &self,
+        claim_type: &str,
+    ) -> Result<Vec<(String, String, String, f64, String)>> {
         let mut params = BTreeMap::new();
         params.insert("ctype".into(), DataValue::Str(claim_type.into()));
 
@@ -528,7 +797,10 @@ impl GraphStore {
     }
 
     /// Get all claims with their source URIs (for bulk artifact generation).
-    pub fn get_all_claims_with_sources(&self) -> Result<Vec<(String, String, String, f64, String)>> {
+    #[allow(clippy::type_complexity)]
+    pub fn get_all_claims_with_sources(
+        &self,
+    ) -> Result<Vec<(String, String, String, f64, String)>> {
         let result = self.query_read(
             r#"?[id, statement, claim_type, confidence, uri] :=
                 *claims{id, statement, claim_type, confidence},
@@ -556,7 +828,10 @@ impl GraphStore {
     }
 
     /// Get relations for a specific entity (by name).
-    pub fn get_relations_for_entity(&self, entity_name: &str) -> Result<Vec<(String, String, f64)>> {
+    pub fn get_relations_for_entity(
+        &self,
+        entity_name: &str,
+    ) -> Result<Vec<(String, String, f64)>> {
         let mut params = BTreeMap::new();
         params.insert("name".into(), DataValue::Str(entity_name.into()));
 
@@ -591,13 +866,18 @@ impl GraphStore {
 
     /// Get all source URIs.
     pub fn get_all_sources(&self) -> Result<Vec<(String, String, String)>> {
-        let result = self.query_read(
-            "?[id, uri, source_type] := *sources{id, uri, source_type}",
-        )?;
+        let result =
+            self.query_read("?[id, uri, source_type] := *sources{id, uri, source_type}")?;
         Ok(result
             .rows
             .iter()
-            .map(|row| (dv_to_string(&row[0]), dv_to_string(&row[1]), dv_to_string(&row[2])))
+            .map(|row| {
+                (
+                    dv_to_string(&row[0]),
+                    dv_to_string(&row[1]),
+                    dv_to_string(&row[2]),
+                )
+            })
             .collect())
     }
 
@@ -620,7 +900,11 @@ impl GraphStore {
     }
 
     /// Search claims by keyword (case-insensitive substring match).
-    pub fn search_claims(&self, keyword: &str) -> Result<Vec<(String, String, String, f64, String)>> {
+    #[allow(clippy::type_complexity)]
+    pub fn search_claims(
+        &self,
+        keyword: &str,
+    ) -> Result<Vec<(String, String, String, f64, String)>> {
         let mut params = BTreeMap::new();
         params.insert("kw".into(), DataValue::Str(keyword.to_lowercase().into()));
 
@@ -677,7 +961,13 @@ impl GraphStore {
         Ok(result
             .rows
             .iter()
-            .map(|row| (dv_to_string(&row[0]), dv_to_string(&row[1]), dv_to_string(&row[2])))
+            .map(|row| {
+                (
+                    dv_to_string(&row[0]),
+                    dv_to_string(&row[1]),
+                    dv_to_string(&row[2]),
+                )
+            })
             .collect())
     }
 
@@ -747,6 +1037,347 @@ impl GraphStore {
             Ok(0)
         }
     }
+
+    fn remove_source_by_id(&self, source_id: &str) -> Result<()> {
+        let claim_ids = self.get_claim_ids_for_source(source_id)?;
+        self.remove_source_relations(source_id)?;
+
+        let mut affected_entity_ids = std::collections::BTreeSet::new();
+
+        for claim_id in &claim_ids {
+            for entity_id in self.get_entity_ids_for_claim(claim_id)? {
+                self.remove_claim_entity_edge(claim_id, &entity_id)?;
+                affected_entity_ids.insert(entity_id);
+            }
+
+            self.remove_claim_source_edges_for_claim(claim_id)?;
+            self.remove_claim_temporal(claim_id)?;
+            self.remove_contradictions_for_claim(claim_id)?;
+            self.remove_claim(claim_id)?;
+        }
+
+        self.remove_source(source_id)?;
+
+        for entity_id in affected_entity_ids {
+            if !self.entity_has_claims(&entity_id)?
+                && !self.entity_has_source_relations(&entity_id)?
+            {
+                self.remove_entity(&entity_id)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn get_claim_ids_for_source(&self, source_id: &str) -> Result<Vec<String>> {
+        let mut params = BTreeMap::new();
+        params.insert("sid".into(), DataValue::Str(source_id.into()));
+
+        let result = self
+            .db
+            .run_script(
+                "?[id] := *claims{id, source_id: $sid}",
+                params,
+                ScriptMutability::Immutable,
+            )
+            .map_err(|e| Error::GraphStorage(format!("query failed: {e}")))?;
+
+        Ok(result
+            .rows
+            .iter()
+            .map(|row| dv_to_string(&row[0]))
+            .collect())
+    }
+
+    fn get_entity_ids_for_claim(&self, claim_id: &str) -> Result<Vec<String>> {
+        let mut params = BTreeMap::new();
+        params.insert("cid".into(), DataValue::Str(claim_id.into()));
+
+        let result = self
+            .db
+            .run_script(
+                "?[entity_id] := *claim_entity_edges{claim_id: $cid, entity_id}",
+                params,
+                ScriptMutability::Immutable,
+            )
+            .map_err(|e| Error::GraphStorage(format!("query failed: {e}")))?;
+
+        Ok(result
+            .rows
+            .iter()
+            .map(|row| dv_to_string(&row[0]))
+            .collect())
+    }
+
+    fn remove_claim_source_edges_for_claim(&self, claim_id: &str) -> Result<()> {
+        let mut params = BTreeMap::new();
+        params.insert("cid".into(), DataValue::Str(claim_id.into()));
+
+        let result = self
+            .db
+            .run_script(
+                "?[source_id] := *claim_source_edges{claim_id: $cid, source_id}",
+                params,
+                ScriptMutability::Immutable,
+            )
+            .map_err(|e| Error::GraphStorage(format!("query failed: {e}")))?;
+
+        for row in &result.rows {
+            let source_id = dv_to_string(&row[0]);
+            let mut rm_params = BTreeMap::new();
+            rm_params.insert("cid".into(), DataValue::Str(claim_id.into()));
+            rm_params.insert("sid".into(), DataValue::Str(source_id.into()));
+            self.query(
+                r#"?[claim_id, source_id] <- [[$cid, $sid]]
+                :rm claim_source_edges {claim_id, source_id}"#,
+                rm_params,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    fn remove_claim_entity_edge(&self, claim_id: &str, entity_id: &str) -> Result<()> {
+        let mut params = BTreeMap::new();
+        params.insert("cid".into(), DataValue::Str(claim_id.into()));
+        params.insert("eid".into(), DataValue::Str(entity_id.into()));
+
+        self.query(
+            r#"?[claim_id, entity_id] <- [[$cid, $eid]]
+            :rm claim_entity_edges {claim_id, entity_id}"#,
+            params,
+        )?;
+        Ok(())
+    }
+
+    fn remove_claim_temporal(&self, claim_id: &str) -> Result<()> {
+        let mut params = BTreeMap::new();
+        params.insert("cid".into(), DataValue::Str(claim_id.into()));
+
+        self.query(
+            r#"?[claim_id] <- [[$cid]]
+            :rm claim_temporal {claim_id}"#,
+            params,
+        )?;
+        Ok(())
+    }
+
+    fn remove_contradictions_for_claim(&self, claim_id: &str) -> Result<()> {
+        for (id, claim_a, claim_b, _, _) in self.get_contradictions()? {
+            if claim_a == claim_id || claim_b == claim_id {
+                let mut params = BTreeMap::new();
+                params.insert("id".into(), DataValue::Str(id.into()));
+                self.query(
+                    r#"?[id] <- [[$id]]
+                    :rm contradictions {id}"#,
+                    params,
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn remove_claim(&self, claim_id: &str) -> Result<()> {
+        let mut params = BTreeMap::new();
+        params.insert("cid".into(), DataValue::Str(claim_id.into()));
+
+        self.query(
+            r#"?[id] <- [[$cid]]
+            :rm claims {id}"#,
+            params,
+        )?;
+        Ok(())
+    }
+
+    fn remove_source(&self, source_id: &str) -> Result<()> {
+        let mut params = BTreeMap::new();
+        params.insert("sid".into(), DataValue::Str(source_id.into()));
+
+        self.query(
+            r#"?[id] <- [[$sid]]
+            :rm sources {id}"#,
+            params,
+        )?;
+        Ok(())
+    }
+
+    fn remove_source_relations(&self, source_id: &str) -> Result<()> {
+        for (sid, from_id, to_id, relation_type, _) in self.get_all_source_relations_raw()? {
+            if sid == source_id {
+                let mut params = BTreeMap::new();
+                params.insert("sid".into(), DataValue::Str(sid.into()));
+                params.insert("fid".into(), DataValue::Str(from_id.into()));
+                params.insert("tid".into(), DataValue::Str(to_id.into()));
+                params.insert("rtype".into(), DataValue::Str(relation_type.into()));
+                self.query(
+                    r#"?[source_id, from_id, to_id, relation_type] <- [[$sid, $fid, $tid, $rtype]]
+                    :rm source_entity_relations {source_id, from_id, to_id, relation_type}"#,
+                    params,
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn entity_has_claims(&self, entity_id: &str) -> Result<bool> {
+        let mut params = BTreeMap::new();
+        params.insert("eid".into(), DataValue::Str(entity_id.into()));
+
+        let result = self
+            .db
+            .run_script(
+                "?[count(claim_id)] := *claim_entity_edges{claim_id, entity_id: $eid}",
+                params,
+                ScriptMutability::Immutable,
+            )
+            .map_err(|e| Error::GraphStorage(format!("query failed: {e}")))?;
+
+        Ok(count_from_rows(&result.rows) > 0)
+    }
+
+    fn entity_has_source_relations(&self, entity_id: &str) -> Result<bool> {
+        let mut params = BTreeMap::new();
+        params.insert("eid".into(), DataValue::Str(entity_id.into()));
+
+        let from_rows = self
+            .db
+            .run_script(
+                "?[count(source_id)] := *source_entity_relations{source_id, from_id: $eid, to_id, relation_type, strength}",
+                params.clone(),
+                ScriptMutability::Immutable,
+            )
+            .map_err(|e| Error::GraphStorage(format!("query failed: {e}")))?;
+
+        if count_from_rows(&from_rows.rows) > 0 {
+            return Ok(true);
+        }
+
+        let to_rows = self
+            .db
+            .run_script(
+                "?[count(source_id)] := *source_entity_relations{source_id, from_id, to_id: $eid, relation_type, strength}",
+                params,
+                ScriptMutability::Immutable,
+            )
+            .map_err(|e| Error::GraphStorage(format!("query failed: {e}")))?;
+
+        Ok(count_from_rows(&to_rows.rows) > 0)
+    }
+
+    fn remove_entity(&self, entity_id: &str) -> Result<()> {
+        let aliases = self.get_aliases_for_entity(entity_id)?;
+        for alias in aliases {
+            let mut params = BTreeMap::new();
+            params.insert("eid".into(), DataValue::Str(entity_id.into()));
+            params.insert("alias".into(), DataValue::Str(alias.into()));
+            self.query(
+                r#"?[entity_id, alias] <- [[$eid, $alias]]
+                :rm entity_aliases {entity_id, alias}"#,
+                params,
+            )?;
+        }
+
+        self.remove_relations_for_entity(entity_id)?;
+
+        let mut params = BTreeMap::new();
+        params.insert("eid".into(), DataValue::Str(entity_id.into()));
+        self.query(
+            r#"?[id] <- [[$eid]]
+            :rm entities {id}"#,
+            params,
+        )?;
+        Ok(())
+    }
+
+    fn clear_entity_relations(&self) -> Result<()> {
+        let result = self.query_read(
+            "?[from_id, to_id, relation_type] := *entity_relations{from_id, to_id, relation_type, strength}",
+        )?;
+
+        for row in &result.rows {
+            let from_id = dv_to_string(&row[0]);
+            let to_id = dv_to_string(&row[1]);
+            let relation_type = dv_to_string(&row[2]);
+            let mut params = BTreeMap::new();
+            params.insert("fid".into(), DataValue::Str(from_id.into()));
+            params.insert("tid".into(), DataValue::Str(to_id.into()));
+            params.insert("rtype".into(), DataValue::Str(relation_type.into()));
+            self.query(
+                r#"?[from_id, to_id, relation_type] <- [[$fid, $tid, $rtype]]
+                :rm entity_relations {from_id, to_id, relation_type}"#,
+                params,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    fn remove_relations_for_entity(&self, entity_id: &str) -> Result<()> {
+        for (source_id, from_id, to_id, relation_type, _) in self.get_all_source_relations_raw()? {
+            if from_id == entity_id || to_id == entity_id {
+                let mut params = BTreeMap::new();
+                params.insert("sid".into(), DataValue::Str(source_id.into()));
+                params.insert("fid".into(), DataValue::Str(from_id.into()));
+                params.insert("tid".into(), DataValue::Str(to_id.into()));
+                params.insert("rtype".into(), DataValue::Str(relation_type.into()));
+                self.query(
+                    r#"?[source_id, from_id, to_id, relation_type] <- [[$sid, $fid, $tid, $rtype]]
+                    :rm source_entity_relations {source_id, from_id, to_id, relation_type}"#,
+                    params,
+                )?;
+            }
+        }
+
+        let result = self.query_read(
+            "?[from_id, to_id, relation_type] := *entity_relations{from_id, to_id, relation_type, strength}",
+        )?;
+
+        for row in &result.rows {
+            let from_id = dv_to_string(&row[0]);
+            let to_id = dv_to_string(&row[1]);
+            let relation_type = dv_to_string(&row[2]);
+            if from_id == entity_id || to_id == entity_id {
+                let mut params = BTreeMap::new();
+                params.insert("fid".into(), DataValue::Str(from_id.into()));
+                params.insert("tid".into(), DataValue::Str(to_id.into()));
+                params.insert("rtype".into(), DataValue::Str(relation_type.into()));
+                self.query(
+                    r#"?[from_id, to_id, relation_type] <- [[$fid, $tid, $rtype]]
+                    :rm entity_relations {from_id, to_id, relation_type}"#,
+                    params,
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn get_all_source_relations_raw(&self) -> Result<Vec<(String, String, String, String, f64)>> {
+        let result = self.query_read(
+            "?[source_id, from_id, to_id, relation_type, strength] := *source_entity_relations{source_id, from_id, to_id, relation_type, strength}",
+        )?;
+
+        Ok(result
+            .rows
+            .iter()
+            .map(|row| {
+                (
+                    dv_to_string(&row[0]),
+                    dv_to_string(&row[1]),
+                    dv_to_string(&row[2]),
+                    dv_to_string(&row[3]),
+                    match &row[4] {
+                        DataValue::Num(Num::Float(f)) => *f,
+                        DataValue::Num(Num::Int(i)) => *i as f64,
+                        _ => 1.0,
+                    },
+                )
+            })
+            .collect())
+    }
 }
 
 /// Extract a String from a DataValue.
@@ -757,6 +1388,37 @@ fn dv_to_string(val: &DataValue) -> String {
         DataValue::Num(Num::Float(f)) => f.to_string(),
         DataValue::Null => String::new(),
         other => format!("{other:?}"),
+    }
+}
+
+fn count_from_rows(rows: &[Vec<DataValue>]) -> usize {
+    if let Some(row) = rows.first() {
+        match &row[0] {
+            DataValue::Num(Num::Int(n)) => *n as usize,
+            DataValue::Num(Num::Float(n)) => *n as usize,
+            _ => 0,
+        }
+    } else {
+        0
+    }
+}
+
+fn parse_entity_type(s: &str) -> EntityType {
+    match s.to_lowercase().as_str() {
+        "person" => EntityType::Person,
+        "system" => EntityType::System,
+        "service" => EntityType::Service,
+        "concept" => EntityType::Concept,
+        "team" => EntityType::Team,
+        "api" => EntityType::Api,
+        "database" => EntityType::Database,
+        "library" => EntityType::Library,
+        "file" => EntityType::File,
+        "module" => EntityType::Module,
+        "function" => EntityType::Function,
+        "config" => EntityType::Config,
+        "organization" => EntityType::Organization,
+        _ => EntityType::Concept,
     }
 }
 
@@ -842,5 +1504,202 @@ mod tests {
         let claims = store.get_claims_for_entity("e1").unwrap();
         assert_eq!(claims.len(), 1);
         assert_eq!(claims[0].1, "Rust is fast");
+    }
+
+    #[test]
+    fn remove_source_by_uri_cleans_derived_graph_state() {
+        let store = mem_store();
+
+        let source = thinkingroot_core::Source::new(
+            "test://doc.md".into(),
+            thinkingroot_core::types::SourceType::File,
+        )
+        .with_hash(thinkingroot_core::types::ContentHash("hash-1".into()));
+        store.insert_source(&source).unwrap();
+
+        let entity = thinkingroot_core::Entity::new(
+            "PostgreSQL",
+            thinkingroot_core::types::EntityType::Database,
+        );
+        store.insert_entity(&entity).unwrap();
+
+        let claim = thinkingroot_core::Claim::new(
+            "PostgreSQL stores transactions",
+            thinkingroot_core::types::ClaimType::Fact,
+            source.id,
+            thinkingroot_core::types::WorkspaceId::new(),
+        );
+        store.insert_claim(&claim).unwrap();
+        store
+            .link_claim_to_source(&claim.id.to_string(), &source.id.to_string())
+            .unwrap();
+        store
+            .link_claim_to_entity(&claim.id.to_string(), &entity.id.to_string())
+            .unwrap();
+        store
+            .link_entities_for_source(
+                &source.id.to_string(),
+                &entity.id.to_string(),
+                &entity.id.to_string(),
+                "Uses",
+                1.0,
+            )
+            .unwrap();
+        store.rebuild_entity_relations().unwrap();
+        store
+            .insert_contradiction("cx1", &claim.id.to_string(), "other-claim", "conflict")
+            .unwrap();
+        store
+            .supersede_claim(&claim.id.to_string(), "newer-claim")
+            .unwrap();
+
+        let removed = store.remove_source_by_uri("test://doc.md").unwrap();
+        assert_eq!(removed, 1);
+        store.rebuild_entity_relations().unwrap();
+
+        let (sources, claims, entities) = store.get_counts().unwrap();
+        assert_eq!((sources, claims, entities), (0, 0, 0));
+        assert!(store.get_all_relations().unwrap().is_empty());
+        assert!(store.get_contradictions().unwrap().is_empty());
+        assert_eq!(store.count_superseded_claims().unwrap(), 0);
+        assert!(
+            store
+                .find_sources_by_uri("test://doc.md")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn get_source_relation_triples_returns_triples_for_source() {
+        let store = mem_store();
+
+        store
+            .link_entities_for_source("src-a", "e1", "e2", "Uses", 0.8)
+            .unwrap();
+        store
+            .link_entities_for_source("src-a", "e1", "e3", "DependsOn", 0.7)
+            .unwrap();
+        store
+            .link_entities_for_source("src-b", "e1", "e2", "Uses", 0.9)
+            .unwrap();
+
+        let triples = store.get_source_relation_triples("src-a").unwrap();
+        assert_eq!(triples.len(), 2, "src-a contributes 2 triples");
+
+        let triples_b = store.get_source_relation_triples("src-b").unwrap();
+        assert_eq!(triples_b.len(), 1, "src-b contributes 1 triple");
+
+        let empty = store.get_source_relation_triples("nonexistent").unwrap();
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn incremental_update_preserves_supported_triple_removes_unsupported() {
+        let store = mem_store();
+
+        // Create real entities so get_all_relations() JOIN works.
+        let e1 = thinkingroot_core::Entity::new("Alpha", thinkingroot_core::types::EntityType::System);
+        let e2 = thinkingroot_core::Entity::new("Beta", thinkingroot_core::types::EntityType::Service);
+        let e3 = thinkingroot_core::Entity::new("Gamma", thinkingroot_core::types::EntityType::Database);
+        store.insert_entity(&e1).unwrap();
+        store.insert_entity(&e2).unwrap();
+        store.insert_entity(&e3).unwrap();
+
+        let eid1 = e1.id.to_string();
+        let eid2 = e2.id.to_string();
+        let eid3 = e3.id.to_string();
+
+        let src_a = thinkingroot_core::Source::new(
+            "test://a.md".into(),
+            thinkingroot_core::types::SourceType::File,
+        );
+        let src_b = thinkingroot_core::Source::new(
+            "test://b.md".into(),
+            thinkingroot_core::types::SourceType::File,
+        );
+        store.insert_source(&src_a).unwrap();
+        store.insert_source(&src_b).unwrap();
+
+        let sid_a = src_a.id.to_string();
+        let sid_b = src_b.id.to_string();
+
+        // Source A: e1→Uses→e2 (0.8) and e1→DependsOn→e3 (0.7).
+        // Source B: e1→Uses→e2 (0.9) — also contributes to first triple.
+        store.link_entities_for_source(&sid_a, &eid1, &eid2, "Uses", 0.8).unwrap();
+        store.link_entities_for_source(&sid_a, &eid1, &eid3, "DependsOn", 0.7).unwrap();
+        store.link_entities_for_source(&sid_b, &eid1, &eid2, "Uses", 0.9).unwrap();
+
+        // Full rebuild to set initial entity_relations state.
+        store.rebuild_entity_relations().unwrap();
+        let before = store.get_all_relations().unwrap();
+        assert_eq!(before.len(), 2, "two distinct relation triples");
+
+        // Capture affected triples BEFORE removing source A.
+        let affected = store.get_source_relation_triples(&sid_a).unwrap();
+        assert_eq!(affected.len(), 2);
+
+        // Remove source A (cascading cleanup removes its source_entity_relations).
+        store.remove_source_by_uri("test://a.md").unwrap();
+
+        // Incremental update — only re-aggregate affected triples.
+        store.update_entity_relations_for_triples(&affected).unwrap();
+
+        let after = store.get_all_relations().unwrap();
+        // e1→Uses→e2 should remain (src_b still has it at 0.9).
+        // e1→DependsOn→e3 should be gone (src_a was the only contributor).
+        assert_eq!(after.len(), 1, "only the triple still supported by src-b should remain");
+    }
+
+    #[test]
+    fn incremental_update_recomputes_max_strength() {
+        let store = mem_store();
+
+        let e1 = thinkingroot_core::Entity::new("Svc1", thinkingroot_core::types::EntityType::Service);
+        let e2 = thinkingroot_core::Entity::new("Svc2", thinkingroot_core::types::EntityType::Service);
+        store.insert_entity(&e1).unwrap();
+        store.insert_entity(&e2).unwrap();
+
+        let eid1 = e1.id.to_string();
+        let eid2 = e2.id.to_string();
+
+        let src_a = thinkingroot_core::Source::new(
+            "test://a.md".into(),
+            thinkingroot_core::types::SourceType::File,
+        );
+        let src_b = thinkingroot_core::Source::new(
+            "test://b.md".into(),
+            thinkingroot_core::types::SourceType::File,
+        );
+        store.insert_source(&src_a).unwrap();
+        store.insert_source(&src_b).unwrap();
+
+        let sid_a = src_a.id.to_string();
+        let sid_b = src_b.id.to_string();
+
+        // Source A: strength 1.0 (highest). Source B: strength 0.5.
+        store.link_entities_for_source(&sid_a, &eid1, &eid2, "Uses", 1.0).unwrap();
+        store.link_entities_for_source(&sid_b, &eid1, &eid2, "Uses", 0.5).unwrap();
+
+        store.rebuild_entity_relations().unwrap();
+        let before = store.get_all_relations().unwrap();
+        let (_, _, _, _, _, initial_strength) = before[0];
+        assert_eq!(initial_strength, 1.0, "max should be 1.0 initially");
+
+        // Capture triples, remove source A, re-add at lower strength.
+        let affected = store.get_source_relation_triples(&sid_a).unwrap();
+        store.remove_source_by_uri("test://a.md").unwrap();
+
+        // Re-insert source A with lower strength (simulates file content change).
+        store.insert_source(&src_a).unwrap();
+        store.link_entities_for_source(&sid_a, &eid1, &eid2, "Uses", 0.3).unwrap();
+
+        // Incremental update should recompute to max(0.3, 0.5) = 0.5.
+        store.update_entity_relations_for_triples(&affected).unwrap();
+
+        let after = store.get_all_relations().unwrap();
+        assert_eq!(after.len(), 1);
+        let (_, _, _, _, _, final_strength) = after[0];
+        assert_eq!(final_strength, 0.5, "max should now be 0.5 (src_b's contribution)");
     }
 }

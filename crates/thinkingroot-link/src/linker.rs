@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use thinkingroot_core::types::*;
 use thinkingroot_core::Result;
+use thinkingroot_core::types::*;
 use thinkingroot_extract::extractor::ExtractionOutput;
 use thinkingroot_graph::graph::GraphStore;
 
@@ -23,6 +23,9 @@ pub struct LinkOutput {
     pub claims_linked: usize,
     pub relations_linked: usize,
     pub contradictions_detected: usize,
+    /// Entity IDs that were created or merged in this linking run.
+    /// Used by the pipeline for selective artifact compilation.
+    pub affected_entity_ids: Vec<String>,
 }
 
 impl<'a> Linker<'a> {
@@ -35,22 +38,27 @@ impl<'a> Linker<'a> {
         let mut output = LinkOutput::default();
 
         // Phase 1: Entity resolution.
-        let mut resolved_entities: Vec<Entity> = Vec::new();
+        let mut resolved_entities = self.graph.get_entities_with_aliases()?;
         let mut entity_id_map: HashMap<EntityId, EntityId> = HashMap::new();
 
         for new_entity in extraction.entities {
             match resolution::resolve_entity(&new_entity, &resolved_entities) {
                 Some(existing_id) => {
                     // Merge into existing.
-                    if let Some(existing) = resolved_entities.iter_mut().find(|e| e.id == existing_id) {
+                    if let Some(existing) =
+                        resolved_entities.iter_mut().find(|e| e.id == existing_id)
+                    {
                         entity_id_map.insert(new_entity.id, existing_id);
                         resolution::merge_entities(existing, &new_entity);
                         output.entities_merged += 1;
+                        output.affected_entity_ids.push(existing_id.to_string());
                     }
                 }
                 None => {
                     // New entity.
-                    entity_id_map.insert(new_entity.id, new_entity.id);
+                    let new_id = new_entity.id;
+                    entity_id_map.insert(new_id, new_id);
+                    output.affected_entity_ids.push(new_id.to_string());
                     resolved_entities.push(new_entity);
                     output.entities_created += 1;
                 }
@@ -77,19 +85,15 @@ impl<'a> Linker<'a> {
 
         for claim in &extraction.claims {
             self.graph.insert_claim(claim)?;
-            self.graph.link_claim_to_source(
-                &claim.id.to_string(),
-                &claim.source.to_string(),
-            )?;
+            self.graph
+                .link_claim_to_source(&claim.id.to_string(), &claim.source.to_string())?;
 
             // Link claim to its referenced entities.
             if let Some(entity_names) = extraction.claim_entity_names.get(&claim.id) {
                 for name in entity_names {
                     if let Some(&entity_id) = name_to_entity.get(&name.to_lowercase()) {
-                        self.graph.link_claim_to_entity(
-                            &claim.id.to_string(),
-                            &entity_id.to_string(),
-                        )?;
+                        self.graph
+                            .link_claim_to_entity(&claim.id.to_string(), &entity_id.to_string())?;
                     }
                 }
             }
@@ -98,11 +102,19 @@ impl<'a> Linker<'a> {
         }
 
         // Phase 3: Link relations (with resolved entity IDs).
-        for relation in &extraction.relations {
-            let from_id = entity_id_map.get(&relation.from).copied().unwrap_or(relation.from);
-            let to_id = entity_id_map.get(&relation.to).copied().unwrap_or(relation.to);
+        for sourced_relation in &extraction.relations {
+            let relation = &sourced_relation.relation;
+            let from_id = entity_id_map
+                .get(&relation.from)
+                .copied()
+                .unwrap_or(relation.from);
+            let to_id = entity_id_map
+                .get(&relation.to)
+                .copied()
+                .unwrap_or(relation.to);
 
-            self.graph.link_entities(
+            self.graph.link_entities_for_source(
+                &sourced_relation.source.to_string(),
                 &from_id.to_string(),
                 &to_id.to_string(),
                 &format!("{:?}", relation.relation_type),
@@ -113,7 +125,11 @@ impl<'a> Linker<'a> {
 
         // Phase 4: Contradiction detection.
         // Group claims by entity, then look for opposing statements.
-        output.contradictions_detected = self.detect_contradictions(&extraction.claims, &extraction.claim_entity_names, &name_to_entity)?;
+        output.contradictions_detected = self.detect_contradictions(
+            &extraction.claims,
+            &extraction.claim_entity_names,
+            &name_to_entity,
+        )?;
 
         tracing::info!(
             "linking complete: {} entities ({} merged), {} claims, {} relations, {} contradictions",
@@ -161,7 +177,7 @@ impl<'a> Linker<'a> {
             ("removed", "added"),
         ];
 
-        for (_eid, group) in &entity_claims {
+        for group in entity_claims.values() {
             for i in 0..group.len() {
                 for j in (i + 1)..group.len() {
                     let a = &group[i];
@@ -175,8 +191,8 @@ impl<'a> Linker<'a> {
                     });
 
                     if is_contradiction {
-                        let contradiction = Contradiction::new(a.id, b.id)
-                            .with_explanation(format!(
+                        let contradiction =
+                            Contradiction::new(a.id, b.id).with_explanation(format!(
                                 "Potential conflict: \"{}\" vs \"{}\"",
                                 truncate(&a.statement, 80),
                                 truncate(&b.statement, 80),
@@ -194,15 +210,11 @@ impl<'a> Linker<'a> {
                         let conf_b = b.confidence.value();
                         if (conf_a - conf_b).abs() > 0.15 {
                             if conf_a > conf_b {
-                                self.graph.supersede_claim(
-                                    &b.id.to_string(),
-                                    &a.id.to_string(),
-                                )?;
+                                self.graph
+                                    .supersede_claim(&b.id.to_string(), &a.id.to_string())?;
                             } else {
-                                self.graph.supersede_claim(
-                                    &a.id.to_string(),
-                                    &b.id.to_string(),
-                                )?;
+                                self.graph
+                                    .supersede_claim(&a.id.to_string(), &b.id.to_string())?;
                             }
                         }
 
@@ -217,9 +229,61 @@ impl<'a> Linker<'a> {
 }
 
 fn truncate(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        s
-    } else {
-        &s[..max]
+    if s.len() <= max { s } else { &s[..max] }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_store() -> GraphStore {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("thinkingroot-link-{unique}"));
+        fs::create_dir_all(&path).unwrap();
+        GraphStore::init(&path).unwrap()
+    }
+
+    #[test]
+    fn linker_merges_against_existing_graph_entities() {
+        let store = temp_store();
+        let existing = Entity::new("PostgreSQL", EntityType::Database);
+        store.insert_entity(&existing).unwrap();
+
+        let source = Source::new("test://new.md".into(), SourceType::File);
+        store.insert_source(&source).unwrap();
+
+        let mut extraction = ExtractionOutput::default();
+        extraction
+            .entities
+            .push(Entity::new("Postgresql", EntityType::Database));
+
+        let claim = Claim::new(
+            "Postgresql stores transaction data",
+            ClaimType::Fact,
+            source.id,
+            WorkspaceId::new(),
+        );
+        extraction
+            .claim_entity_names
+            .insert(claim.id, vec!["Postgresql".into()]);
+        extraction.claims.push(claim);
+
+        let linker = Linker::new(&store);
+        let result = linker.link(extraction).unwrap();
+
+        assert_eq!(result.entities_created, 0);
+        assert_eq!(result.entities_merged, 1);
+
+        let entities = store.get_all_entities().unwrap();
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].1, "PostgreSQL");
+
+        let aliases = store.get_aliases_for_entity(&entities[0].0).unwrap();
+        assert!(aliases.iter().any(|alias| alias == "Postgresql"));
     }
 }

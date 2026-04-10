@@ -71,8 +71,7 @@ impl Claim {
 
     /// Returns true if this claim is currently active (not superseded, not expired).
     pub fn is_active(&self) -> bool {
-        self.superseded_by.is_none()
-            && self.valid_until.map_or(true, |until| until > Utc::now())
+        self.superseded_by.is_none() && self.valid_until.is_none_or(|until| until > Utc::now())
     }
 }
 

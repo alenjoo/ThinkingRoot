@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::Context as _;
@@ -6,7 +6,12 @@ use clap::{Parser, Subcommand};
 use console::style;
 use tracing_subscriber::EnvFilter;
 
+mod mcp_config;
 mod pipeline;
+mod serve;
+mod setup;
+mod watch;
+mod workspace;
 
 #[derive(Parser)]
 #[command(
@@ -58,6 +63,95 @@ enum Commands {
         #[arg(short = 'n', long, default_value = "10")]
         top_k: usize,
     },
+    /// Open the interactive knowledge graph in your browser
+    Graph {
+        /// Path to the compiled knowledge base
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Port to bind
+        #[arg(long, default_value = "3001")]
+        port: u16,
+    },
+    /// Start the REST API and MCP server
+    Serve {
+        /// Port to bind [default: 3000]
+        #[arg(long, default_value = "3000")]
+        port: u16,
+        /// Host to bind
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        /// Optional API key for bearer authentication
+        #[arg(long)]
+        api_key: Option<String>,
+        /// Workspace paths to mount (repeatable; if omitted, reads from registry)
+        #[arg(long = "path")]
+        paths: Vec<PathBuf>,
+        /// Mount a single workspace by registry name
+        #[arg(long)]
+        name: Option<String>,
+        /// Run as MCP stdio server (single workspace, no HTTP)
+        #[arg(long)]
+        mcp_stdio: bool,
+        /// Disable REST API (MCP only)
+        #[arg(long)]
+        no_rest: bool,
+        /// Disable MCP endpoints (REST only)
+        #[arg(long)]
+        no_mcp: bool,
+        /// Generate and install an OS-native service file (launchd/systemd/Windows)
+        #[arg(long)]
+        install_service: bool,
+    },
+    /// First-time guided setup wizard
+    Setup,
+    /// Manage registered workspaces
+    Workspace {
+        #[command(subcommand)]
+        action: WorkspaceAction,
+    },
+    /// Write MCP configuration to detected AI tools
+    Connect {
+        /// Only connect this specific tool (e.g. "claude", "cursor")
+        #[arg(long)]
+        tool: Option<String>,
+        /// Port the ThinkingRoot server is running on
+        #[arg(long, default_value = "3000")]
+        port: u16,
+        /// Show what would be written without changing any files
+        #[arg(long)]
+        dry_run: bool,
+        /// Remove ThinkingRoot entry from all tool configs
+        #[arg(long)]
+        remove: bool,
+    },
+    /// Watch for changes and recompile incrementally
+    Watch {
+        /// Path to the directory to watch
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum WorkspaceAction {
+    /// Register a directory as a workspace
+    Add {
+        /// Path to the directory
+        path: PathBuf,
+        /// Workspace name (defaults to directory name)
+        #[arg(long)]
+        name: Option<String>,
+        /// Port for this workspace's server (defaults to next available)
+        #[arg(long)]
+        port: Option<u16>,
+    },
+    /// List all registered workspaces
+    List,
+    /// Remove a workspace from the registry
+    Remove {
+        /// Workspace name to remove
+        name: String,
+    },
 }
 
 #[tokio::main]
@@ -88,6 +182,48 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Query { query, path, top_k }) => {
             run_query(&path, &query, top_k).await?;
+        }
+        Some(Commands::Graph { path, port }) => {
+            serve::run_graph(port, path).await?;
+        }
+        Some(Commands::Serve {
+            port,
+            host,
+            api_key,
+            paths,
+            name,
+            mcp_stdio,
+            no_rest,
+            no_mcp,
+            install_service,
+        }) => {
+            if install_service {
+                serve::install_service()?;
+                return Ok(());
+            }
+            serve::run_serve(port, host, api_key, paths, name, mcp_stdio, no_rest, no_mcp).await?;
+        }
+        Some(Commands::Setup) => {
+            setup::run_setup().await?;
+        }
+        Some(Commands::Workspace { action }) => match action {
+            WorkspaceAction::Add { path, name, port } => {
+                workspace::run_workspace_add(path, name, port)?;
+            }
+            WorkspaceAction::List => {
+                workspace::run_workspace_list()?;
+            }
+            WorkspaceAction::Remove { name } => {
+                workspace::run_workspace_remove(&name)?;
+            }
+        },
+        Some(Commands::Connect { tool, port, dry_run, remove }) => {
+            mcp_config::run_connect(tool.as_deref(), port, dry_run, remove)?;
+        }
+        Some(Commands::Watch { path }) => {
+            let path = std::fs::canonicalize(&path)
+                .with_context(|| format!("path not found: {}", path.display()))?;
+            watch::run_watch(&path).await?;
         }
         None => {
             // `root ./path` shorthand — same as `root compile ./path`.
@@ -155,6 +291,20 @@ async fn run_compile(path: &PathBuf) -> anyhow::Result<()> {
         style("  └──").dim(),
         style(result.artifacts_count).cyan()
     );
+    if result.cache_hits > 0 {
+        println!(
+            "  {} {} extraction cache hits",
+            style("  ├──").dim(),
+            style(result.cache_hits).green()
+        );
+    }
+    if result.early_cutoffs > 0 {
+        println!(
+            "  {} {} sources unchanged (early cutoff)",
+            style("  └──").dim(),
+            style(result.early_cutoffs).green()
+        );
+    }
     println!();
 
     Ok(())
@@ -174,7 +324,8 @@ async fn run_health(path: &PathBuf) -> anyhow::Result<()> {
     }
 
     let config = thinkingroot_core::Config::load(&path)?;
-    let storage = thinkingroot_graph::StorageEngine::init(&data_dir).await
+    let storage = thinkingroot_graph::StorageEngine::init(&data_dir)
+        .await
         .context("failed to open storage")?;
     let verifier = thinkingroot_verify::Verifier::new(&config);
     let result = verifier.verify(&storage.graph)?;
@@ -208,7 +359,8 @@ async fn run_query(path: &PathBuf, query: &str, top_k: usize) -> anyhow::Result<
         );
     }
 
-    let mut storage = thinkingroot_graph::StorageEngine::init(&data_dir).await
+    let mut storage = thinkingroot_graph::StorageEngine::init(&data_dir)
+        .await
         .context("failed to open storage")?;
 
     if storage.vector.is_empty() {
@@ -260,11 +412,7 @@ async fn run_query(path: &PathBuf, query: &str, top_k: usize) -> anyhow::Result<
                         );
                     }
                 }
-                println!(
-                    "      {} {:.0}%",
-                    style("relevance:").dim(),
-                    score * 100.0
-                );
+                println!("      {} {:.0}%", style("relevance:").dim(), score * 100.0);
                 println!();
             }
             Some(&"claim") if parts.len() >= 5 => {
@@ -303,7 +451,7 @@ async fn run_query(path: &PathBuf, query: &str, top_k: usize) -> anyhow::Result<
     Ok(())
 }
 
-fn run_init(path: &PathBuf) -> anyhow::Result<()> {
+fn run_init(path: &Path) -> anyhow::Result<()> {
     let data_dir = path.join(".thinkingroot");
 
     if data_dir.exists() {
@@ -323,7 +471,10 @@ fn run_init(path: &PathBuf) -> anyhow::Result<()> {
         style("ThinkingRoot").green().bold(),
         data_dir.display()
     );
-    println!("  Run `root compile {}` to compile your knowledge.", path.display());
+    println!(
+        "  Run `root compile {}` to compile your knowledge.",
+        path.display()
+    );
 
     Ok(())
 }

@@ -25,22 +25,16 @@ impl Compiler {
     }
 
     /// Compile all artifacts and write them to disk.
-    pub fn compile_all(
-        &self,
-        graph: &GraphStore,
-        data_dir: &Path,
-    ) -> Result<Vec<Artifact>> {
+    pub fn compile_all(&self, graph: &GraphStore, data_dir: &Path) -> Result<Vec<Artifact>> {
         let output_path = data_dir.join(&self.output_dir);
-        std::fs::create_dir_all(&output_path)
-            .map_err(|e| Error::io_path(&output_path, e))?;
+        std::fs::create_dir_all(&output_path).map_err(|e| Error::io_path(&output_path, e))?;
 
         let mut artifacts = Vec::new();
 
         // 1. Compile entity pages.
         let entities = graph.get_all_entities()?;
         let entities_dir = output_path.join("entities");
-        std::fs::create_dir_all(&entities_dir)
-            .map_err(|e| Error::io_path(&entities_dir, e))?;
+        std::fs::create_dir_all(&entities_dir).map_err(|e| Error::io_path(&entities_dir, e))?;
 
         for (entity_id, entity_name, entity_type) in &entities {
             match self.compile_entity_page(graph, entity_id, entity_name, entity_type) {
@@ -150,6 +144,88 @@ impl Compiler {
 
         tracing::info!(
             "compiled {} artifacts to {}",
+            artifacts.len(),
+            output_path.display()
+        );
+        Ok(artifacts)
+    }
+
+    /// Compile only artifacts affected by changes.
+    ///
+    /// - Entity pages: only recompiled for `affected_entity_ids`
+    /// - Global artifacts (architecture map, contradiction report, etc.):
+    ///   only recompiled when `has_changes` is true
+    pub fn compile_affected(
+        &self,
+        graph: &GraphStore,
+        data_dir: &Path,
+        affected_entity_ids: &[String],
+        has_changes: bool,
+    ) -> Result<Vec<Artifact>> {
+        let output_path = data_dir.join(&self.output_dir);
+        std::fs::create_dir_all(&output_path).map_err(|e| Error::io_path(&output_path, e))?;
+
+        let mut artifacts = Vec::new();
+
+        // 1. Compile entity pages only for affected entities.
+        if !affected_entity_ids.is_empty() {
+            let entities_dir = output_path.join("entities");
+            std::fs::create_dir_all(&entities_dir)
+                .map_err(|e| Error::io_path(&entities_dir, e))?;
+
+            let all_entities = graph.get_all_entities()?;
+            let affected_set: std::collections::HashSet<&str> =
+                affected_entity_ids.iter().map(|s| s.as_str()).collect();
+
+            for (entity_id, entity_name, entity_type) in &all_entities {
+                if !affected_set.contains(entity_id.as_str()) {
+                    continue;
+                }
+                match self.compile_entity_page(graph, entity_id, entity_name, entity_type) {
+                    Ok(artifact) => {
+                        let file_name = sanitize_filename(entity_name);
+                        let file_path = entities_dir.join(format!("{file_name}.md"));
+                        std::fs::write(&file_path, &artifact.content)
+                            .map_err(|e| Error::io_path(&file_path, e))?;
+                        artifacts.push(artifact);
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to compile entity page for {entity_name}: {e}");
+                    }
+                }
+            }
+        }
+
+        // 2. Recompile global artifacts only if something changed.
+        if has_changes {
+            for (filename, artifact_result) in [
+                ("architecture-map.md", self.compile_architecture_map(graph)),
+                (
+                    "contradiction-report.md",
+                    self.compile_contradiction_report(graph),
+                ),
+                ("decision-log.md", self.compile_decision_log(graph)),
+                ("task-pack.md", self.compile_task_pack(graph)),
+                ("agent-brief.md", self.compile_agent_brief(graph)),
+                ("runbook.md", self.compile_runbook(graph)),
+                ("health-report.md", self.compile_health_report(graph)),
+            ] {
+                match artifact_result {
+                    Ok(artifact) => {
+                        let file_path = output_path.join(filename);
+                        std::fs::write(&file_path, &artifact.content)
+                            .map_err(|e| Error::io_path(&file_path, e))?;
+                        artifacts.push(artifact);
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to compile {filename}: {e}");
+                    }
+                }
+            }
+        }
+
+        tracing::info!(
+            "compiled {} artifacts (incremental) to {}",
             artifacts.len(),
             output_path.display()
         );
@@ -380,9 +456,7 @@ impl Compiler {
 
         let contradictions: Vec<serde_json::Value> = contradictions_raw
             .iter()
-            .map(|(_, _, _, explanation, _)| {
-                serde_json::json!({ "explanation": explanation })
-            })
+            .map(|(_, _, _, explanation, _)| serde_json::json!({ "explanation": explanation }))
             .collect();
 
         let mut context = Context::new();
@@ -400,11 +474,7 @@ impl Compiler {
             .render("task_pack.md", &context)
             .map_err(|e| Error::Template(e.to_string()))?;
 
-        Ok(Artifact::new(
-            ArtifactType::TaskPack,
-            "Task Pack",
-            content,
-        ))
+        Ok(Artifact::new(ArtifactType::TaskPack, "Task Pack", content))
     }
 
     fn compile_agent_brief(&self, graph: &GraphStore) -> Result<Artifact> {
@@ -534,9 +604,7 @@ impl Compiler {
 
         let contradictions: Vec<serde_json::Value> = contradictions_raw
             .iter()
-            .map(|(_, _, _, explanation, _)| {
-                serde_json::json!({ "explanation": explanation })
-            })
+            .map(|(_, _, _, explanation, _)| serde_json::json!({ "explanation": explanation }))
             .collect();
 
         let mut context = Context::new();
@@ -559,7 +627,11 @@ impl Compiler {
     }
 
     /// Helper: query claims by type and return as JSON array for templates.
-    fn claims_by_type_to_json(&self, graph: &GraphStore, claim_type: &str) -> Result<Vec<serde_json::Value>> {
+    fn claims_by_type_to_json(
+        &self,
+        graph: &GraphStore,
+        claim_type: &str,
+    ) -> Result<Vec<serde_json::Value>> {
         Ok(graph
             .get_claims_by_type(claim_type)?
             .iter()

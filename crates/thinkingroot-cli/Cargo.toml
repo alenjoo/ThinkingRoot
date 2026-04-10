@@ -19,6 +19,7 @@ thinkingroot-extract = { workspace = true }
 thinkingroot-link = { workspace = true }
 thinkingroot-compile = { workspace = true }
 thinkingroot-verify = { workspace = true }
+thinkingroot-serve = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
@@ -29,6 +30,18 @@ indicatif = { workspace = true }
 console = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }
+dirs = { workspace = true }
+dialoguer = { workspace = true }
+axum = { workspace = true }
+reqwest = { workspace = true }
+notify = { workspace = true }
+notify-debouncer-mini = { workspace = true }
+
+[features]
+## Enable neural embedding for semantic search. On by default; disable with
+## --no-default-features for faster test builds that skip ONNX Runtime linking.
+default = ["vector"]
+vector = ["thinkingroot-graph/vector", "thinkingroot-serve/vector"]
 
 [dev-dependencies]
 tempfile = "3"

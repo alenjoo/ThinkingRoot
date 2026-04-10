@@ -5,7 +5,7 @@ use crate::error::{Error, Result};
 
 /// Top-level configuration for a ThinkingRoot workspace.
 /// Stored at `.thinkingroot/config.toml` inside the target directory.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     #[serde(default)]
     pub workspace: WorkspaceConfig,
@@ -40,6 +40,65 @@ impl Config {
         }
     }
 
+    /// Merge a parsed workspace config with the global config.
+    /// If the raw workspace TOML contains no `[llm]` section, the global LLM config wins.
+    /// If the workspace has an `[llm]` section, it wins — but individual provider credentials
+    /// from the global are inherited for any provider slot left as `None`.
+    pub fn merge_with_global(
+        mut workspace: Config,
+        raw_toml: &str,
+        global: &crate::global_config::GlobalConfig,
+    ) -> Config {
+        let has_llm_section = toml::from_str::<toml::Value>(raw_toml)
+            .ok()
+            .and_then(|v| v.as_table().map(|t| t.contains_key("llm")))
+            .unwrap_or(false);
+
+        if !has_llm_section {
+            workspace.llm = global.llm.clone();
+        } else {
+            // Workspace set its own LLM section — inherit individual provider creds from global
+            macro_rules! inherit {
+                ($field:ident) => {
+                    if workspace.llm.providers.$field.is_none() {
+                        workspace.llm.providers.$field = global.llm.providers.$field.clone();
+                    }
+                };
+            }
+            inherit!(openai);
+            inherit!(anthropic);
+            inherit!(ollama);
+            inherit!(groq);
+            inherit!(deepseek);
+            inherit!(openrouter);
+            inherit!(together);
+            inherit!(perplexity);
+            inherit!(litellm);
+            inherit!(custom);
+        }
+        workspace
+    }
+
+    /// Load workspace config merged with global config.
+    /// Priority: per-workspace `.thinkingroot/config.toml` > global `~/.config/thinkingroot/config.toml` > defaults.
+    pub fn load_merged(workspace_path: &std::path::Path) -> Result<Self> {
+        let global = crate::global_config::GlobalConfig::load().unwrap_or_default();
+        let config_path = workspace_path.join(".thinkingroot").join("config.toml");
+
+        if !config_path.exists() {
+            let config = Self {
+                llm: global.llm,
+                ..Default::default()
+            };
+            return Ok(config);
+        }
+
+        let raw = std::fs::read_to_string(&config_path)
+            .map_err(|e| Error::io_path(&config_path, e))?;
+        let workspace: Config = toml::from_str(&raw)?;
+        Ok(Self::merge_with_global(workspace, &raw, &global))
+    }
+
     /// Save config to the `.thinkingroot/config.toml` file.
     pub fn save(&self, root_path: &Path) -> Result<()> {
         let dir = root_path.join(".thinkingroot");
@@ -51,23 +110,15 @@ impl Config {
     }
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            workspace: WorkspaceConfig::default(),
-            llm: LlmConfig::default(),
-            extraction: ExtractionConfig::default(),
-            compilation: CompilationConfig::default(),
-            verification: VerificationConfig::default(),
-            parsers: ParserConfig::default(),
-        }
-    }
+fn default_data_dir() -> String {
+    ".thinkingroot".to_string()
 }
 
 /// Workspace-level settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceConfig {
     pub name: Option<String>,
+    #[serde(default = "default_data_dir")]
     pub data_dir: String,
 }
 
@@ -119,6 +170,11 @@ pub struct ProvidersConfig {
     pub ollama: Option<ProviderConfig>,
     pub groq: Option<ProviderConfig>,
     pub deepseek: Option<ProviderConfig>,
+    pub openrouter: Option<ProviderConfig>,
+    pub together: Option<ProviderConfig>,
+    pub perplexity: Option<ProviderConfig>,
+    pub litellm: Option<ProviderConfig>,
+    pub custom: Option<ProviderConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,6 +306,74 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    fn load_merged_uses_global_llm_when_workspace_has_no_llm_section() {
+        use crate::global_config::{GlobalConfig, ServeConfig};
+
+        let global = GlobalConfig {
+            llm: LlmConfig {
+                default_provider: "openrouter".to_string(),
+                extraction_model: "anthropic/claude-3-haiku".to_string(),
+                compilation_model: "anthropic/claude-3-haiku".to_string(),
+                max_concurrent_requests: 5,
+                request_timeout_secs: 120,
+                providers: ProvidersConfig::default(),
+            },
+            serve: ServeConfig::default(),
+        };
+
+        // Workspace config has NO llm section — raw TOML has only [workspace]
+        let workspace_toml = r#"
+[workspace]
+name = "myproject"
+"#;
+
+        let merged = Config::merge_with_global(
+            toml::from_str(workspace_toml).unwrap(),
+            workspace_toml,
+            &global,
+        );
+        assert_eq!(merged.llm.default_provider, "openrouter");
+        assert_eq!(merged.workspace.name, Some("myproject".to_string()));
+    }
+
+    #[test]
+    fn load_merged_workspace_llm_overrides_global() {
+        use crate::global_config::{GlobalConfig, ServeConfig};
+
+        let global = GlobalConfig {
+            llm: LlmConfig {
+                default_provider: "openrouter".to_string(),
+                extraction_model: "anthropic/claude-3-haiku".to_string(),
+                compilation_model: "anthropic/claude-3-haiku".to_string(),
+                max_concurrent_requests: 5,
+                request_timeout_secs: 120,
+                providers: ProvidersConfig::default(),
+            },
+            serve: ServeConfig::default(),
+        };
+
+        let workspace_toml = r#"
+[workspace]
+name = "myproject"
+
+[llm]
+default_provider = "ollama"
+extraction_model = "llama3"
+compilation_model = "llama3"
+max_concurrent_requests = 2
+request_timeout_secs = 60
+"#;
+
+        let merged = Config::merge_with_global(
+            toml::from_str(workspace_toml).unwrap(),
+            workspace_toml,
+            &global,
+        );
+        assert_eq!(merged.llm.default_provider, "ollama");
+        assert_eq!(merged.llm.extraction_model, "llama3");
+    }
+
+    #[test]
     fn default_config_is_valid() {
         let config = Config::default();
         assert_eq!(config.llm.default_provider, "bedrock");
@@ -263,5 +387,55 @@ mod tests {
         let toml_str = toml::to_string_pretty(&config).unwrap();
         let parsed: Config = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.llm.default_provider, config.llm.default_provider);
+    }
+
+    #[test]
+    fn new_providers_roundtrip_toml() {
+        let toml = r#"
+[llm]
+default_provider = "openrouter"
+extraction_model = "anthropic/claude-3-haiku"
+compilation_model = "anthropic/claude-3-haiku"
+max_concurrent_requests = 5
+request_timeout_secs = 120
+
+[llm.providers.openrouter]
+api_key_env = "OPENROUTER_API_KEY"
+
+[llm.providers.together]
+api_key_env = "TOGETHER_API_KEY"
+
+[llm.providers.perplexity]
+api_key_env = "PERPLEXITY_API_KEY"
+
+[llm.providers.litellm]
+base_url = "http://localhost:4000"
+
+[llm.providers.custom]
+api_key_env = "CUSTOM_LLM_API_KEY"
+base_url = "https://my-endpoint.com/v1"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.llm.default_provider, "openrouter");
+        assert_eq!(
+            config.llm.providers.openrouter.as_ref().unwrap().api_key_env.as_deref(),
+            Some("OPENROUTER_API_KEY")
+        );
+        assert_eq!(
+            config.llm.providers.together.as_ref().unwrap().api_key_env.as_deref(),
+            Some("TOGETHER_API_KEY")
+        );
+        assert_eq!(
+            config.llm.providers.perplexity.as_ref().unwrap().api_key_env.as_deref(),
+            Some("PERPLEXITY_API_KEY")
+        );
+        assert_eq!(
+            config.llm.providers.litellm.as_ref().unwrap().base_url.as_deref(),
+            Some("http://localhost:4000")
+        );
+        assert_eq!(
+            config.llm.providers.custom.as_ref().unwrap().base_url.as_deref(),
+            Some("https://my-endpoint.com/v1")
+        );
     }
 }
