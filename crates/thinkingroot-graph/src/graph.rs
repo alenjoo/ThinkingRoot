@@ -433,6 +433,82 @@ impl GraphStore {
         Ok(())
     }
 
+    /// Get (from_id, to_id, relation_type) triples contributed by a specific source.
+    /// Used to capture affected triples before source removal for incremental updates.
+    pub fn get_source_relation_triples(
+        &self,
+        source_id: &str,
+    ) -> Result<Vec<(String, String, String)>> {
+        let mut params = BTreeMap::new();
+        params.insert("sid".into(), DataValue::Str(source_id.into()));
+
+        let result = self
+            .db
+            .run_script(
+                "?[from_id, to_id, relation_type] := *source_entity_relations{source_id: $sid, from_id, to_id, relation_type}",
+                params,
+                ScriptMutability::Immutable,
+            )
+            .map_err(|e| Error::GraphStorage(format!("query failed: {e}")))?;
+
+        Ok(result
+            .rows
+            .iter()
+            .map(|row| {
+                (
+                    dv_to_string(&row[0]),
+                    dv_to_string(&row[1]),
+                    dv_to_string(&row[2]),
+                )
+            })
+            .collect())
+    }
+
+    /// Incrementally update entity_relations for specific (from, to, rel_type) triples.
+    /// Removes the stale aggregated edge, then re-aggregates from source_entity_relations.
+    /// If no source still contributes a triple, the aggregated edge stays deleted.
+    /// This is O(affected_triples) instead of O(all_edges).
+    pub fn update_entity_relations_for_triples(
+        &self,
+        triples: &[(String, String, String)],
+    ) -> Result<()> {
+        for (from_id, to_id, relation_type) in triples {
+            // Remove stale aggregated edge.
+            let mut params = BTreeMap::new();
+            params.insert("fid".into(), DataValue::Str(from_id.clone().into()));
+            params.insert("tid".into(), DataValue::Str(to_id.clone().into()));
+            params.insert(
+                "rtype".into(),
+                DataValue::Str(relation_type.clone().into()),
+            );
+            self.query(
+                r#"?[from_id, to_id, relation_type] <- [[$fid, $tid, $rtype]]
+                :rm entity_relations {from_id, to_id, relation_type}"#,
+                params.clone(),
+            )?;
+
+            // Re-aggregate: if any source still contributes this triple, re-insert.
+            let result = self
+                .db
+                .run_script(
+                    "?[max(strength)] := *source_entity_relations{from_id: $fid, to_id: $tid, relation_type: $rtype, strength}",
+                    params,
+                    ScriptMutability::Immutable,
+                )
+                .map_err(|e| Error::GraphStorage(format!("query failed: {e}")))?;
+
+            if let Some(row) = result.rows.first() {
+                let strength = match &row[0] {
+                    DataValue::Num(Num::Float(f)) => *f,
+                    DataValue::Num(Num::Int(i)) => *i as f64,
+                    _ => continue,
+                };
+                self.link_entities(from_id, to_id, relation_type, strength)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Query all entities.
     pub fn get_all_entities(&self) -> Result<Vec<(String, String, String)>> {
         let result = self.query_read(
@@ -1480,5 +1556,136 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn get_source_relation_triples_returns_triples_for_source() {
+        let store = mem_store();
+
+        store
+            .link_entities_for_source("src-a", "e1", "e2", "Uses", 0.8)
+            .unwrap();
+        store
+            .link_entities_for_source("src-a", "e1", "e3", "DependsOn", 0.7)
+            .unwrap();
+        store
+            .link_entities_for_source("src-b", "e1", "e2", "Uses", 0.9)
+            .unwrap();
+
+        let triples = store.get_source_relation_triples("src-a").unwrap();
+        assert_eq!(triples.len(), 2, "src-a contributes 2 triples");
+
+        let triples_b = store.get_source_relation_triples("src-b").unwrap();
+        assert_eq!(triples_b.len(), 1, "src-b contributes 1 triple");
+
+        let empty = store.get_source_relation_triples("nonexistent").unwrap();
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn incremental_update_preserves_supported_triple_removes_unsupported() {
+        let store = mem_store();
+
+        // Create real entities so get_all_relations() JOIN works.
+        let e1 = thinkingroot_core::Entity::new("Alpha", thinkingroot_core::types::EntityType::System);
+        let e2 = thinkingroot_core::Entity::new("Beta", thinkingroot_core::types::EntityType::Service);
+        let e3 = thinkingroot_core::Entity::new("Gamma", thinkingroot_core::types::EntityType::Database);
+        store.insert_entity(&e1).unwrap();
+        store.insert_entity(&e2).unwrap();
+        store.insert_entity(&e3).unwrap();
+
+        let eid1 = e1.id.to_string();
+        let eid2 = e2.id.to_string();
+        let eid3 = e3.id.to_string();
+
+        let src_a = thinkingroot_core::Source::new(
+            "test://a.md".into(),
+            thinkingroot_core::types::SourceType::File,
+        );
+        let src_b = thinkingroot_core::Source::new(
+            "test://b.md".into(),
+            thinkingroot_core::types::SourceType::File,
+        );
+        store.insert_source(&src_a).unwrap();
+        store.insert_source(&src_b).unwrap();
+
+        let sid_a = src_a.id.to_string();
+        let sid_b = src_b.id.to_string();
+
+        // Source A: e1→Uses→e2 (0.8) and e1→DependsOn→e3 (0.7).
+        // Source B: e1→Uses→e2 (0.9) — also contributes to first triple.
+        store.link_entities_for_source(&sid_a, &eid1, &eid2, "Uses", 0.8).unwrap();
+        store.link_entities_for_source(&sid_a, &eid1, &eid3, "DependsOn", 0.7).unwrap();
+        store.link_entities_for_source(&sid_b, &eid1, &eid2, "Uses", 0.9).unwrap();
+
+        // Full rebuild to set initial entity_relations state.
+        store.rebuild_entity_relations().unwrap();
+        let before = store.get_all_relations().unwrap();
+        assert_eq!(before.len(), 2, "two distinct relation triples");
+
+        // Capture affected triples BEFORE removing source A.
+        let affected = store.get_source_relation_triples(&sid_a).unwrap();
+        assert_eq!(affected.len(), 2);
+
+        // Remove source A (cascading cleanup removes its source_entity_relations).
+        store.remove_source_by_uri("test://a.md").unwrap();
+
+        // Incremental update — only re-aggregate affected triples.
+        store.update_entity_relations_for_triples(&affected).unwrap();
+
+        let after = store.get_all_relations().unwrap();
+        // e1→Uses→e2 should remain (src_b still has it at 0.9).
+        // e1→DependsOn→e3 should be gone (src_a was the only contributor).
+        assert_eq!(after.len(), 1, "only the triple still supported by src-b should remain");
+    }
+
+    #[test]
+    fn incremental_update_recomputes_max_strength() {
+        let store = mem_store();
+
+        let e1 = thinkingroot_core::Entity::new("Svc1", thinkingroot_core::types::EntityType::Service);
+        let e2 = thinkingroot_core::Entity::new("Svc2", thinkingroot_core::types::EntityType::Service);
+        store.insert_entity(&e1).unwrap();
+        store.insert_entity(&e2).unwrap();
+
+        let eid1 = e1.id.to_string();
+        let eid2 = e2.id.to_string();
+
+        let src_a = thinkingroot_core::Source::new(
+            "test://a.md".into(),
+            thinkingroot_core::types::SourceType::File,
+        );
+        let src_b = thinkingroot_core::Source::new(
+            "test://b.md".into(),
+            thinkingroot_core::types::SourceType::File,
+        );
+        store.insert_source(&src_a).unwrap();
+        store.insert_source(&src_b).unwrap();
+
+        let sid_a = src_a.id.to_string();
+        let sid_b = src_b.id.to_string();
+
+        // Source A: strength 1.0 (highest). Source B: strength 0.5.
+        store.link_entities_for_source(&sid_a, &eid1, &eid2, "Uses", 1.0).unwrap();
+        store.link_entities_for_source(&sid_b, &eid1, &eid2, "Uses", 0.5).unwrap();
+
+        store.rebuild_entity_relations().unwrap();
+        let before = store.get_all_relations().unwrap();
+        assert_eq!(before[0].5, 1.0, "max should be 1.0 initially");
+
+        // Capture triples, remove source A, re-add at lower strength.
+        let affected = store.get_source_relation_triples(&sid_a).unwrap();
+        store.remove_source_by_uri("test://a.md").unwrap();
+
+        // Re-insert source A with lower strength (simulates file content change).
+        store.insert_source(&src_a).unwrap();
+        store.link_entities_for_source(&sid_a, &eid1, &eid2, "Uses", 0.3).unwrap();
+
+        // Incremental update should recompute to max(0.3, 0.5) = 0.5.
+        store.update_entity_relations_for_triples(&affected).unwrap();
+
+        let after = store.get_all_relations().unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].5, 0.5, "max should now be 0.5 (src_b's contribution)");
     }
 }
