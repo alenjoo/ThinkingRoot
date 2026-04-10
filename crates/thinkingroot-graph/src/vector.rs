@@ -269,4 +269,27 @@ mod tests {
         // Full behavioral test requires an initialized store (async + model download).
         let _: fn(&mut VectorStore, &[&str]) = VectorStore::remove_by_ids;
     }
+
+    #[cfg(feature = "vector")]
+    #[tokio::test]
+    #[ignore = "requires fastembed model download (~30 MB)"]
+    async fn remove_by_ids_removes_only_specified() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = VectorStore::init(dir.path()).await.unwrap();
+
+        let items = vec![
+            ("id-1".to_string(), "hello world".to_string(), "meta1".to_string()),
+            ("id-2".to_string(), "foo bar".to_string(), "meta2".to_string()),
+            ("id-3".to_string(), "baz qux".to_string(), "meta3".to_string()),
+        ];
+        store.upsert_batch(&items).unwrap();
+        assert_eq!(store.len(), 3);
+
+        store.remove_by_ids(&["id-1", "id-3"]);
+        assert_eq!(store.len(), 1, "only id-2 should remain");
+
+        // Removing nonexistent IDs is a no-op.
+        store.remove_by_ids(&["nonexistent"]);
+        assert_eq!(store.len(), 1);
+    }
 }
