@@ -19,6 +19,7 @@ pub struct Extractor {
     llm: SharedLlm,
     concurrency: usize,
     min_confidence: f64,
+    cache: Option<crate::cache::ExtractionCache>,
 }
 
 /// The combined output of extraction across all documents.
@@ -50,7 +51,23 @@ impl Extractor {
             llm: Arc::new(llm),
             concurrency: config.llm.max_concurrent_requests,
             min_confidence: config.extraction.min_confidence,
+            cache: None,
         })
+    }
+
+    /// Enable the content-addressable extraction cache stored at
+    /// `{data_dir}/cache/extraction/`.
+    pub fn with_cache_dir(mut self, data_dir: &std::path::Path) -> Self {
+        match crate::cache::ExtractionCache::new(data_dir) {
+            Ok(cache) => {
+                tracing::info!("extraction cache enabled ({} entries)", cache.len());
+                self.cache = Some(cache);
+            }
+            Err(e) => {
+                tracing::warn!("extraction cache disabled (failed to init): {e}");
+            }
+        }
+        self
     }
 
     /// Extract knowledge from a batch of documents — all chunks run concurrently.
@@ -62,16 +79,37 @@ impl Extractor {
         let semaphore = Arc::new(Semaphore::new(self.concurrency));
         let min_confidence = self.min_confidence;
 
-        // Collect all (doc, chunk) pairs upfront, spawn one task per chunk.
+        let mut output = ExtractionOutput::default();
+        let documents_len = documents.len();
+
+        // Separate cache hits (processed immediately) from misses (spawned as LLM tasks).
         let mut handles = Vec::new();
 
         for doc in documents {
             for chunk in &doc.chunks {
+                let content = chunk.content.clone();
+                let source_id = doc.source_id;
+
+                // Check cache first.
+                if let Some(ref cache) = self.cache {
+                    if let Some(cached_result) = cache.get(&content) {
+                        tracing::debug!("extraction cache hit for chunk in {}", doc.uri);
+                        let converted = Self::convert_result_static(
+                            cached_result,
+                            source_id,
+                            workspace_id,
+                            min_confidence,
+                        );
+                        output.merge(converted);
+                        output.chunks_processed += 1;
+                        continue;
+                    }
+                }
+
+                // Cache miss — spawn LLM task.
                 let llm = Arc::clone(&self.llm);
                 let sem = Arc::clone(&semaphore);
                 let uri = doc.uri.clone();
-                let source_id = doc.source_id;
-                let content = chunk.content.clone();
                 let context = prompts::build_context(
                     &doc.uri,
                     chunk.language.as_deref(),
@@ -81,7 +119,7 @@ impl Extractor {
                 let handle = tokio::spawn(async move {
                     let _permit = sem.acquire().await.ok()?;
                     match llm.extract(&content, &context).await {
-                        Ok(result) => Some((source_id, uri, result)),
+                        Ok(result) => Some((source_id, uri, content, result)),
                         Err(e) => {
                             tracing::warn!("extraction failed for chunk in {uri}: {e}");
                             None
@@ -93,12 +131,19 @@ impl Extractor {
             }
         }
 
-        let mut output = ExtractionOutput::default();
-        let sources_processed = documents.len();
+        let sources_processed = documents_len;
 
         for handle in handles {
-            if let Ok(Some((source_id, _uri, result))) = handle.await {
-                let converted = Self::convert_result_static(result, source_id, workspace_id, min_confidence);
+            if let Ok(Some((source_id, _uri, content, result))) = handle.await {
+                // Write to cache for future runs.
+                if let Some(ref cache) = self.cache {
+                    if let Err(e) = cache.put(&content, &result) {
+                        tracing::warn!("failed to write extraction cache entry: {e}");
+                    }
+                }
+
+                let converted =
+                    Self::convert_result_static(result, source_id, workspace_id, min_confidence);
                 output.merge(converted);
                 output.chunks_processed += 1;
             }
