@@ -119,6 +119,11 @@ pub struct ProvidersConfig {
     pub ollama: Option<ProviderConfig>,
     pub groq: Option<ProviderConfig>,
     pub deepseek: Option<ProviderConfig>,
+    pub openrouter: Option<ProviderConfig>,
+    pub together: Option<ProviderConfig>,
+    pub perplexity: Option<ProviderConfig>,
+    pub litellm: Option<ProviderConfig>,
+    pub custom: Option<ProviderConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -263,5 +268,55 @@ mod tests {
         let toml_str = toml::to_string_pretty(&config).unwrap();
         let parsed: Config = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.llm.default_provider, config.llm.default_provider);
+    }
+
+    #[test]
+    fn new_providers_roundtrip_toml() {
+        let toml = r#"
+[llm]
+default_provider = "openrouter"
+extraction_model = "anthropic/claude-3-haiku"
+compilation_model = "anthropic/claude-3-haiku"
+max_concurrent_requests = 5
+request_timeout_secs = 120
+
+[llm.providers.openrouter]
+api_key_env = "OPENROUTER_API_KEY"
+
+[llm.providers.together]
+api_key_env = "TOGETHER_API_KEY"
+
+[llm.providers.perplexity]
+api_key_env = "PERPLEXITY_API_KEY"
+
+[llm.providers.litellm]
+base_url = "http://localhost:4000"
+
+[llm.providers.custom]
+api_key_env = "CUSTOM_LLM_API_KEY"
+base_url = "https://my-endpoint.com/v1"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.llm.default_provider, "openrouter");
+        assert_eq!(
+            config.llm.providers.openrouter.as_ref().unwrap().api_key_env.as_deref(),
+            Some("OPENROUTER_API_KEY")
+        );
+        assert_eq!(
+            config.llm.providers.together.as_ref().unwrap().api_key_env.as_deref(),
+            Some("TOGETHER_API_KEY")
+        );
+        assert_eq!(
+            config.llm.providers.perplexity.as_ref().unwrap().api_key_env.as_deref(),
+            Some("PERPLEXITY_API_KEY")
+        );
+        assert_eq!(
+            config.llm.providers.litellm.as_ref().unwrap().base_url.as_deref(),
+            Some("http://localhost:4000")
+        );
+        assert_eq!(
+            config.llm.providers.custom.as_ref().unwrap().base_url.as_deref(),
+            Some("https://my-endpoint.com/v1")
+        );
     }
 }
