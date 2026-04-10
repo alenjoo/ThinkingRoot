@@ -103,6 +103,13 @@ impl BranchRegistry {
         self.data.branches.iter()
             .find(|b| b.name == name && matches!(b.status, BranchStatus::Active))
     }
+
+    /// Get all abandoned branches.
+    pub fn list_abandoned(&self) -> Vec<&BranchRef> {
+        self.data.branches.iter()
+            .filter(|b| matches!(b.status, BranchStatus::Abandoned { .. }))
+            .collect()
+    }
 }
 
 /// Read the active HEAD branch name.

@@ -308,7 +308,18 @@ impl Compiler {
             .collect();
 
         // Get decision claims.
-        let decisions: Vec<serde_json::Value> = Vec::new(); // TODO: query Decision-type claims
+        let decision_rows = graph.get_claims_by_type("Decision")?;
+        let decisions: Vec<serde_json::Value> = decision_rows
+            .iter()
+            .map(|(id, statement, _source_id, confidence, uri)| {
+                serde_json::json!({
+                    "id": id,
+                    "statement": statement,
+                    "confidence": confidence,
+                    "source_uri": uri,
+                })
+            })
+            .collect();
 
         let mut context = Context::new();
         context.insert("source_count", &sources);

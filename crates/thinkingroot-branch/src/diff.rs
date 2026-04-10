@@ -4,8 +4,8 @@ use std::collections::{HashMap, HashSet};
 use chrono::Utc;
 use thinkingroot_core::{
     config::Config, AutoResolution, Claim, ClaimId, ClaimType, Confidence, ContradictionPair,
-    DiffClaim, DiffEntity, DiffStatus, KnowledgeDiff, PipelineVersion, Result, Sensitivity,
-    SourceId, WorkspaceId,
+    DiffClaim, DiffEntity, DiffRelation, DiffStatus, KnowledgeDiff, PipelineVersion, Result,
+    Sensitivity, SourceId, WorkspaceId,
 };
 use thinkingroot_graph::graph::GraphStore;
 use thinkingroot_verify::Verifier;
@@ -48,6 +48,19 @@ fn is_contradiction_pair(a: &str, b: &str) -> bool {
         }
     }
     false
+}
+
+/// Jaccard token similarity between two statements.
+/// Returns a value in [0.0, 1.0].
+fn jaccard_similarity(a: &str, b: &str) -> f64 {
+    let tokens_a: HashSet<&str> = a.split_whitespace().collect();
+    let tokens_b: HashSet<&str> = b.split_whitespace().collect();
+    let intersection = tokens_a.intersection(&tokens_b).count();
+    let union = tokens_a.union(&tokens_b).count();
+    if union == 0 {
+        return 0.0;
+    }
+    intersection as f64 / union as f64
 }
 
 fn parse_claim_type(s: &str) -> ClaimType {
@@ -179,6 +192,74 @@ pub fn compute_diff(
         }
     }
 
+    // Second-pass contradiction detection via Jaccard token similarity.
+    // Claims that share >60% token overlap but different semantic hashes and
+    // share entity context are flagged as potential conflicts, even when the
+    // negation-pair heuristic missed them.
+    for (id, statement, _, confidence, _) in &new_claim_rows {
+        let entity_context = entity_map.get(id.as_str()).cloned().unwrap_or_default();
+        if entity_context.is_empty() {
+            continue;
+        }
+        for (main_id, main_stmt, _, main_conf, _) in &main_claims_raw {
+            // Skip pairs already caught by negation-pair pass.
+            let already_flagged = auto_resolved
+                .iter()
+                .any(|r| &r.branch_claim_id == id && r.main_claim_id == *main_id)
+                || needs_review
+                    .iter()
+                    .any(|p| &p.branch_claim_id == id && p.main_claim_id == *main_id);
+            if already_flagged {
+                continue;
+            }
+            // Only compare claims with overlapping entity context.
+            let main_entities = entity_map.get(main_id.as_str()).cloned().unwrap_or_default();
+            let shared_entities = entity_context
+                .iter()
+                .filter(|e| main_entities.contains(e))
+                .count();
+            if shared_entities == 0 {
+                continue;
+            }
+            let sim = jaccard_similarity(
+                &statement.to_lowercase(),
+                &main_stmt.to_lowercase(),
+            );
+            // High overlap but different hashes → potential conflict.
+            if sim > 0.6 && semantic_hash(statement) != semantic_hash(main_stmt) {
+                let delta = (confidence - main_conf).abs();
+                if delta > auto_resolve_threshold {
+                    let winner = if confidence > main_conf {
+                        id.to_string()
+                    } else {
+                        main_id.clone()
+                    };
+                    auto_resolved.push(AutoResolution {
+                        main_claim_id: main_id.clone(),
+                        branch_claim_id: id.to_string(),
+                        winner,
+                        confidence_delta: delta,
+                        reason: format!(
+                            "Jaccard similarity {:.2} > 0.60 with confidence delta {:.2} > threshold",
+                            sim, delta
+                        ),
+                    });
+                } else {
+                    needs_review.push(ContradictionPair {
+                        main_claim_id: main_id.clone(),
+                        branch_claim_id: id.to_string(),
+                        main_statement: main_stmt.clone(),
+                        branch_statement: statement.to_string(),
+                        explanation: format!(
+                            "Potentially conflicting claims about the same subject (Jaccard={:.2}, confidence delta {:.2} below threshold)",
+                            sim, delta
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
     // Identify new entities (in branch, not in main by canonical name)
     let main_entity_names: HashSet<String> = main_graph
         .get_entities_with_aliases()?
@@ -192,6 +273,28 @@ pub fn compute_diff(
         .filter(|e| !main_entity_names.contains(&e.canonical_name))
         .map(|e| DiffEntity {
             entity: e,
+            diff_status: DiffStatus::Added,
+        })
+        .collect();
+
+    // Identify new relations (in branch, not in main by (from_name, to_name, rel_type) key).
+    let main_relation_keys: HashSet<(String, String, String)> = main_graph
+        .get_all_relations()?
+        .into_iter()
+        .map(|(from, to, rel, _, _, _)| (from, to, rel))
+        .collect();
+
+    let new_relations: Vec<DiffRelation> = branch_graph
+        .get_all_relations()?
+        .into_iter()
+        .filter(|(from, to, rel, _, _, _)| {
+            !main_relation_keys.contains(&(from.clone(), to.clone(), rel.clone()))
+        })
+        .map(|(from_name, to_name, relation_type, _, _, strength)| DiffRelation {
+            from_name,
+            to_name,
+            relation_type,
+            strength,
             diff_status: DiffStatus::Added,
         })
         .collect();
@@ -220,7 +323,7 @@ pub fn compute_diff(
         computed_at: Utc::now(),
         new_claims,
         new_entities,
-        new_relations: vec![],
+        new_relations,
         auto_resolved,
         needs_review,
         health_before,

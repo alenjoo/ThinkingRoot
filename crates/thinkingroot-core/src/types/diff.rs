@@ -2,7 +2,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::types::{Claim, Entity, Relation};
+use crate::types::{Claim, Entity};
 use crate::HealthScore;
 
 /// A computed semantic diff between two knowledge branches.
@@ -57,11 +57,21 @@ pub struct DiffEntity {
     pub diff_status: DiffStatus,
 }
 
-/// A single relation annotated with its diff status.
+/// A single relation annotated with its diff status and named entity endpoints.
+///
+/// Carries the entity names directly so consumers can display and merge without
+/// a secondary graph lookup — the opaque `EntityId`s on `Relation` are not
+/// useful in a cross-graph context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiffRelation {
-    /// The relation itself.
-    pub relation: Relation,
+    /// Canonical name of the source entity.
+    pub from_name: String,
+    /// Canonical name of the target entity.
+    pub to_name: String,
+    /// Relation type as a string (e.g. "depends_on", "uses").
+    pub relation_type: String,
+    /// Relation strength [0.0, 1.0].
+    pub strength: f64,
     /// Whether the relation was added, modified, or removed.
     pub diff_status: DiffStatus,
 }

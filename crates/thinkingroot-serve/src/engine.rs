@@ -210,6 +210,38 @@ impl QueryEngine {
         Ok(())
     }
 
+    /// Mount a workspace using an explicit data directory instead of the default
+    /// `.thinkingroot/` subdirectory. Used by `root serve --branch` to mount a
+    /// branch-scoped data directory such as `.thinkingroot-feature-x/`.
+    pub async fn mount_with_data_dir(
+        &mut self,
+        name: String,
+        root_path: PathBuf,
+        data_dir: PathBuf,
+    ) -> Result<()> {
+        if !data_dir.exists() {
+            return Err(Error::Config(format!(
+                "data directory not found: {}",
+                data_dir.display()
+            )));
+        }
+
+        let config = Config::load_merged(&root_path).unwrap_or_default();
+        let storage = StorageEngine::init(&data_dir).await?;
+
+        self.workspaces.insert(
+            name.clone(),
+            WorkspaceHandle {
+                name,
+                root_path,
+                storage: Arc::new(Mutex::new(storage)),
+                config,
+            },
+        );
+
+        Ok(())
+    }
+
     /// Unmount a previously mounted workspace.
     pub fn unmount(&mut self, name: &str) -> Result<()> {
         self.workspaces

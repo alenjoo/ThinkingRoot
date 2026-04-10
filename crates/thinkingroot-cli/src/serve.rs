@@ -5,6 +5,7 @@ use anyhow::Context as _;
 
 use tokio::sync::RwLock;
 
+use thinkingroot_branch::snapshot::resolve_data_dir;
 use thinkingroot_core::WorkspaceRegistry;
 use thinkingroot_serve::engine::QueryEngine;
 use thinkingroot_serve::rest::{AppState, build_router_opts};
@@ -118,16 +119,31 @@ pub async fn run_serve(
 
     let mut engine = QueryEngine::new();
     for (ws_name, abs_path, _ws_port) in &resolved_paths {
-        if branch.is_some() {
-            // --branch is requested but mount_data_dir is not yet implemented.
-            // Fall back to main and warn the user.
-            tracing::warn!(
-                "--branch flag is not yet supported for serve; mounting main data dir for workspace '{}'",
-                ws_name
+        if let Some(ref branch_name) = branch {
+            let data_dir = resolve_data_dir(abs_path, Some(branch_name));
+            if !data_dir.exists() {
+                anyhow::bail!(
+                    "branch '{}' not found for workspace '{}' — expected data dir at {}. \
+                     Run `root branch {}` first.",
+                    branch_name,
+                    ws_name,
+                    data_dir.display(),
+                    branch_name,
+                );
+            }
+            engine
+                .mount_with_data_dir(ws_name.clone(), abs_path.clone(), data_dir.clone())
+                .await?;
+            tracing::info!(
+                "mounted workspace '{}' from branch '{}' ({})",
+                ws_name,
+                branch_name,
+                data_dir.display()
             );
+        } else {
+            engine.mount(ws_name.clone(), abs_path.clone()).await?;
+            tracing::info!("mounted workspace '{}' from {}", ws_name, abs_path.display());
         }
-        engine.mount(ws_name.clone(), abs_path.clone()).await?;
-        tracing::info!("mounted workspace '{}' from {}", ws_name, abs_path.display());
     }
 
     if mcp_stdio {

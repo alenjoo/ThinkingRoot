@@ -7,18 +7,21 @@ use std::path::Path;
 use anyhow::Context as _;
 use console::style;
 use thinkingroot_branch::{
-    create_branch, delete_branch, diff::compute_diff, list_branches, merge::execute_merge,
-    read_head_branch, snapshot::resolve_data_dir, write_head_branch,
+    create_branch, delete_branch, diff::compute_diff, gc_branches, list_branches,
+    merge::execute_merge, purge_branch, read_head_branch, rollback_merge,
+    snapshot::resolve_data_dir, write_head_branch,
 };
 use thinkingroot_core::{Config, MergedBy};
 use thinkingroot_graph::graph::GraphStore;
 
-/// Handle `root branch [<name>] [--list] [--delete <name>] [--description <desc>]`
+/// Handle `root branch [<name>] [--list] [--delete <name>] [--purge <name>] [--gc]`
 pub async fn handle_branch(
     root: &Path,
     name: Option<&str>,
     list: bool,
     delete: Option<&str>,
+    purge: Option<&str>,
+    gc: bool,
     description: Option<String>,
 ) -> anyhow::Result<()> {
     if list {
@@ -43,7 +46,37 @@ pub async fn handle_branch(
     if let Some(to_delete) = delete {
         delete_branch(root, to_delete)
             .with_context(|| format!("branch '{}' not found", to_delete))?;
-        println!("  {} Branch '{}' deleted", style("✓").green(), to_delete);
+        println!(
+            "  {} Branch '{}' abandoned (data dir kept — use --purge to remove)",
+            style("✓").green(),
+            to_delete
+        );
+        return Ok(());
+    }
+
+    if let Some(to_purge) = purge {
+        purge_branch(root, to_purge)
+            .with_context(|| format!("branch '{}' not found", to_purge))?;
+        println!(
+            "  {} Branch '{}' purged (data directory removed)",
+            style("✓").green(),
+            to_purge
+        );
+        return Ok(());
+    }
+
+    if gc {
+        let removed = gc_branches(root).context("garbage collection failed")?;
+        if removed == 0 {
+            println!("  No abandoned branches to collect");
+        } else {
+            println!(
+                "  {} Collected {} abandoned branch data director{}",
+                style("✓").green(),
+                removed,
+                if removed == 1 { "y" } else { "ies" }
+            );
+        }
         return Ok(());
     }
 
@@ -60,9 +93,21 @@ pub async fn handle_branch(
         );
         println!("  Hint: root checkout {}", branch.name);
     } else {
-        eprintln!("Usage: root branch <name> | --list | --delete <name>");
+        eprintln!("Usage: root branch <name> | --list | --delete <name> | --purge <name> | --gc");
         std::process::exit(1);
     }
+    Ok(())
+}
+
+/// Handle `root merge <branch> --rollback`
+pub fn handle_rollback(root: &Path, branch: &str) -> anyhow::Result<()> {
+    rollback_merge(root, branch)
+        .with_context(|| format!("rollback of '{}' failed", branch))?;
+    println!(
+        "  {} Main rolled back to state before '{}' was merged",
+        style("✓").green().bold(),
+        style(branch).cyan().bold()
+    );
     Ok(())
 }
 
@@ -160,6 +205,23 @@ pub async fn handle_diff(root: &Path, branch: &str) -> anyhow::Result<()> {
             de.entity.canonical_name,
             de.entity.entity_type
         );
+    }
+    if !diff.new_relations.is_empty() {
+        println!(
+            "  {} New relations: {}",
+            style("│").dim(),
+            style(diff.new_relations.len()).cyan().bold()
+        );
+        for dr in &diff.new_relations {
+            println!(
+                "  {} {} --[{}]--> {} (strength={:.2})",
+                style("│ +").green(),
+                dr.from_name,
+                dr.relation_type,
+                dr.to_name,
+                dr.strength,
+            );
+        }
     }
     if !diff.auto_resolved.is_empty() {
         println!(
@@ -332,7 +394,7 @@ mod tests {
     #[tokio::test]
     async fn handle_branch_list_on_empty() {
         let dir = TempDir::new().unwrap();
-        let result = handle_branch(dir.path(), None, true, None, None).await;
+        let result = handle_branch(dir.path(), None, true, None, None, false, None).await;
         assert!(
             result.is_ok(),
             "branch --list on empty workspace should succeed"

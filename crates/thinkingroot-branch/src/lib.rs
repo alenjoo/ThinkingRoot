@@ -1,6 +1,7 @@
 // crates/thinkingroot-branch/src/lib.rs
 pub mod branch;
 pub mod diff;
+pub mod lock;
 pub mod merge;
 pub mod snapshot;
 
@@ -57,4 +58,49 @@ pub fn delete_branch(root_path: &Path, name: &str) -> Result<()> {
     let refs_dir = root_path.join(".thinkingroot-refs");
     let mut registry = branch::BranchRegistry::load_or_create(&refs_dir)?;
     registry.abandon_branch(name)
+}
+
+/// Hard-delete a branch: mark as Abandoned AND remove its `.thinkingroot-{slug}/` directory.
+///
+/// Use `delete_branch` for soft delete (keeps data dir). Use this when you want
+/// to reclaim disk space and are sure you no longer need the branch data.
+pub fn purge_branch(root_path: &Path, name: &str) -> Result<()> {
+    let refs_dir = root_path.join(".thinkingroot-refs");
+    let mut registry = branch::BranchRegistry::load_or_create(&refs_dir)?;
+    registry.abandon_branch(name)?;
+    let data_dir = snapshot::resolve_data_dir(root_path, Some(name));
+    if data_dir.exists() {
+        std::fs::remove_dir_all(&data_dir)?;
+    }
+    Ok(())
+}
+
+/// Garbage-collect: purge all branches currently in Abandoned state.
+///
+/// Removes their data directories and leaves only the registry tombstone entries
+/// so history is preserved.
+pub fn gc_branches(root_path: &Path) -> Result<usize> {
+    let refs_dir = root_path.join(".thinkingroot-refs");
+    if !refs_dir.exists() {
+        return Ok(0);
+    }
+    let registry = branch::BranchRegistry::load_or_create(&refs_dir)?;
+    let abandoned: Vec<String> = registry
+        .list_abandoned()
+        .into_iter()
+        .map(|b| b.name.clone())
+        .collect();
+    let count = abandoned.len();
+    for name in &abandoned {
+        let data_dir = snapshot::resolve_data_dir(root_path, Some(name));
+        if data_dir.exists() {
+            std::fs::remove_dir_all(&data_dir)?;
+        }
+    }
+    Ok(count)
+}
+
+/// Roll back a previously executed merge by restoring the pre-merge graph snapshot.
+pub fn rollback_merge(root_path: &Path, branch_name: &str) -> Result<()> {
+    merge::rollback_merge(root_path, branch_name)
 }

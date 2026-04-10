@@ -45,21 +45,46 @@ pub fn create_branch_layout(
         fs::copy(&src_db, &dst_db)?;
     }
 
-    // Symlink models/ (fastembed cache — never duplicate ~300MB)
+    // Share models/ (fastembed cache — ~300MB, never duplicate).
+    // Unix: symlink. Windows: copy recursively (junctions require elevated perms).
     let parent_models = parent_data_dir.join("models");
     let branch_models = branch_data_dir.join("models");
     if parent_models.exists() && !branch_models.exists() {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&parent_models, &branch_models)?;
+        #[cfg(windows)]
+        copy_dir_all(&parent_models, &branch_models)?;
     }
 
-    // Symlink cache/ (extraction cache)
+    // Share cache/ (extraction cache).
     let parent_cache = parent_data_dir.join("cache");
     let branch_cache = branch_data_dir.join("cache");
     if parent_cache.exists() && !branch_cache.exists() {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&parent_cache, &branch_cache)?;
+        #[cfg(windows)]
+        copy_dir_all(&parent_cache, &branch_cache)?;
     }
 
+    Ok(())
+}
+
+/// Recursively copy a directory tree from `src` to `dst`.
+///
+/// Used on Windows as a fallback when creating branch layouts, since
+/// creating symlinks there requires elevated privileges.
+#[allow(dead_code)]
+fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_all(&src_path, &dst_path)?;
+        } else {
+            fs::copy(&src_path, &dst_path)?;
+        }
+    }
     Ok(())
 }

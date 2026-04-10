@@ -144,9 +144,15 @@ enum Commands {
         /// List all active branches
         #[arg(long)]
         list: bool,
-        /// Delete (abandon) a branch
+        /// Delete (abandon) a branch — keeps data directory
         #[arg(long)]
         delete: Option<String>,
+        /// Hard-delete a branch and remove its data directory
+        #[arg(long)]
+        purge: Option<String>,
+        /// Remove all abandoned branch data directories (garbage collect)
+        #[arg(long)]
+        gc: bool,
         /// Optional description for the new branch
         #[arg(long)]
         description: Option<String>,
@@ -183,6 +189,9 @@ enum Commands {
         /// Apply claim deletions from branch to main
         #[arg(long)]
         propagate_deletions: bool,
+        /// Restore main to its state before this branch was merged
+        #[arg(long)]
+        rollback: bool,
     },
     /// Show current branch and workspace status
     Status {
@@ -294,8 +303,8 @@ async fn main() -> anyhow::Result<()> {
                 .with_context(|| format!("path not found: {}", path.display()))?;
             watch::run_watch(&path).await?;
         }
-        Some(Commands::Branch { name, list, delete, description, path }) => {
-            branch_cmd::handle_branch(&path, name.as_deref(), list, delete.as_deref(), description).await?;
+        Some(Commands::Branch { name, list, delete, purge, gc, description, path }) => {
+            branch_cmd::handle_branch(&path, name.as_deref(), list, delete.as_deref(), purge.as_deref(), gc, description).await?;
         }
         Some(Commands::Checkout { name, path }) => {
             branch_cmd::handle_checkout(&path, &name).await?;
@@ -303,8 +312,12 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Diff { branch, path }) => {
             branch_cmd::handle_diff(&path, &branch).await?;
         }
-        Some(Commands::Merge { branch, path, force, propagate_deletions }) => {
-            branch_cmd::handle_merge(&path, &branch, force, propagate_deletions).await?;
+        Some(Commands::Merge { branch, path, force, propagate_deletions, rollback }) => {
+            if rollback {
+                branch_cmd::handle_rollback(&path, &branch)?;
+            } else {
+                branch_cmd::handle_merge(&path, &branch, force, propagate_deletions).await?;
+            }
         }
         Some(Commands::Status { path }) => {
             branch_cmd::handle_status(&path).await?;
