@@ -36,3 +36,85 @@ fn resolve_data_dir_branch() {
         p.join(".thinkingroot-feature-graphql")
     );
 }
+
+use thinkingroot_branch::branch::{BranchRegistry, read_head, write_head};
+use tempfile::tempdir;
+
+#[test]
+fn registry_create_and_list() {
+    let dir = tempdir().unwrap();
+    let refs_dir = dir.path().join(".thinkingroot-refs");
+    std::fs::create_dir_all(&refs_dir).unwrap();
+
+    let mut reg = BranchRegistry::load_or_create(&refs_dir).unwrap();
+    reg.create_branch("feature/x", "main", None).unwrap();
+
+    let branches = reg.list_active();
+    assert_eq!(branches.len(), 1);
+    assert_eq!(branches[0].name, "feature/x");
+    assert_eq!(branches[0].slug, "feature-x");
+    assert_eq!(branches[0].parent, "main");
+}
+
+#[test]
+fn registry_duplicate_fails() {
+    let dir = tempdir().unwrap();
+    let refs_dir = dir.path().join(".thinkingroot-refs");
+    std::fs::create_dir_all(&refs_dir).unwrap();
+
+    let mut reg = BranchRegistry::load_or_create(&refs_dir).unwrap();
+    reg.create_branch("feature/x", "main", None).unwrap();
+    let result = reg.create_branch("feature/x", "main", None);
+    assert!(result.is_err(), "duplicate branch should fail");
+}
+
+#[test]
+fn registry_abandon_removes_from_active() {
+    let dir = tempdir().unwrap();
+    let refs_dir = dir.path().join(".thinkingroot-refs");
+    std::fs::create_dir_all(&refs_dir).unwrap();
+
+    let mut reg = BranchRegistry::load_or_create(&refs_dir).unwrap();
+    reg.create_branch("feature/x", "main", None).unwrap();
+    reg.abandon_branch("feature/x").unwrap();
+
+    let branches = reg.list_active();
+    assert_eq!(branches.len(), 0);
+}
+
+#[test]
+fn registry_persists_across_loads() {
+    let dir = tempdir().unwrap();
+    let refs_dir = dir.path().join(".thinkingroot-refs");
+    std::fs::create_dir_all(&refs_dir).unwrap();
+
+    {
+        let mut reg = BranchRegistry::load_or_create(&refs_dir).unwrap();
+        reg.create_branch("feature/y", "main", Some("test desc".to_string())).unwrap();
+    }
+
+    let reg2 = BranchRegistry::load_or_create(&refs_dir).unwrap();
+    let branches = reg2.list_active();
+    assert_eq!(branches.len(), 1);
+    assert_eq!(branches[0].name, "feature/y");
+    assert_eq!(branches[0].description, Some("test desc".to_string()));
+}
+
+#[test]
+fn head_roundtrip() {
+    let dir = tempdir().unwrap();
+    let refs_dir = dir.path().join(".thinkingroot-refs");
+    std::fs::create_dir_all(&refs_dir).unwrap();
+
+    write_head(&refs_dir, "feature/x").unwrap();
+    assert_eq!(read_head(&refs_dir).unwrap(), "feature/x");
+}
+
+#[test]
+fn head_defaults_to_main() {
+    let dir = tempdir().unwrap();
+    let refs_dir = dir.path().join(".thinkingroot-refs");
+    std::fs::create_dir_all(&refs_dir).unwrap();
+    // No HEAD file written yet
+    assert_eq!(read_head(&refs_dir).unwrap(), "main");
+}
