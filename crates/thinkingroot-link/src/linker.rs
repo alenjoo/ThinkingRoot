@@ -26,6 +26,8 @@ pub struct LinkOutput {
     /// Entity IDs that were created or merged in this linking run.
     /// Used by the pipeline for selective artifact compilation.
     pub affected_entity_ids: Vec<String>,
+    /// Claim IDs inserted in this linking run (used for surgical vector updates).
+    pub added_claim_ids: Vec<String>,
 }
 
 impl<'a> Linker<'a> {
@@ -85,6 +87,7 @@ impl<'a> Linker<'a> {
 
         for claim in &extraction.claims {
             self.graph.insert_claim(claim)?;
+            output.added_claim_ids.push(claim.id.to_string());
             self.graph
                 .link_claim_to_source(&claim.id.to_string(), &claim.source.to_string())?;
 

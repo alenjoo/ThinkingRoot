@@ -1069,7 +1069,7 @@ impl GraphStore {
         Ok(())
     }
 
-    fn get_claim_ids_for_source(&self, source_id: &str) -> Result<Vec<String>> {
+    pub fn get_claim_ids_for_source(&self, source_id: &str) -> Result<Vec<String>> {
         let mut params = BTreeMap::new();
         params.insert("sid".into(), DataValue::Str(source_id.into()));
 
@@ -1077,6 +1077,29 @@ impl GraphStore {
             .db
             .run_script(
                 "?[id] := *claims{id, source_id: $sid}",
+                params,
+                ScriptMutability::Immutable,
+            )
+            .map_err(|e| Error::GraphStorage(format!("query failed: {e}")))?;
+
+        Ok(result
+            .rows
+            .iter()
+            .map(|row| dv_to_string(&row[0]))
+            .collect())
+    }
+
+    /// Get entity IDs that have at least one claim from this source.
+    /// Used to identify candidate stale vector entries before source removal.
+    pub fn get_entity_ids_for_source(&self, source_id: &str) -> Result<Vec<String>> {
+        let mut params = BTreeMap::new();
+        params.insert("sid".into(), DataValue::Str(source_id.into()));
+
+        let result = self
+            .db
+            .run_script(
+                "?[entity_id] := *claim_source_edges{claim_id, source_id: $sid}, \
+                 *claim_entity_edges{claim_id, entity_id}",
                 params,
                 ScriptMutability::Immutable,
             )
@@ -1701,5 +1724,43 @@ mod tests {
         assert_eq!(after.len(), 1);
         let (_, _, _, _, _, final_strength) = after[0];
         assert_eq!(final_strength, 0.5, "max should now be 0.5 (src_b's contribution)");
+    }
+
+    #[test]
+    fn get_entity_ids_for_source_returns_linked_entities() {
+        let store = mem_store();
+
+        let entity = thinkingroot_core::types::Entity::new("Alpha", thinkingroot_core::types::EntityType::System);
+        store.insert_entity(&entity).unwrap();
+
+        let source = thinkingroot_core::Source::new(
+            "test://a.md".into(),
+            thinkingroot_core::types::SourceType::File,
+        );
+        store.insert_source(&source).unwrap();
+
+        let workspace = thinkingroot_core::types::WorkspaceId::new();
+        let claim = thinkingroot_core::types::Claim::new(
+            "Alpha is fast",
+            thinkingroot_core::types::ClaimType::Fact,
+            source.id,
+            workspace,
+        );
+        store.insert_claim(&claim).unwrap();
+        store.link_claim_to_source(&claim.id.to_string(), &source.id.to_string()).unwrap();
+        store.link_claim_to_entity(&claim.id.to_string(), &entity.id.to_string()).unwrap();
+
+        let entity_ids = store.get_entity_ids_for_source(&source.id.to_string()).unwrap();
+        assert_eq!(entity_ids.len(), 1);
+        assert_eq!(entity_ids[0], entity.id.to_string());
+
+        // Different source: no claims linked → empty result.
+        let source2 = thinkingroot_core::Source::new(
+            "test://b.md".into(),
+            thinkingroot_core::types::SourceType::File,
+        );
+        store.insert_source(&source2).unwrap();
+        let entity_ids2 = store.get_entity_ids_for_source(&source2.id.to_string()).unwrap();
+        assert!(entity_ids2.is_empty());
     }
 }

@@ -126,12 +126,22 @@ pub async fn run_pipeline(root_path: &Path) -> Result<PipelineResult> {
     let mut changed = 0usize;
     let mut deleted = 0usize;
 
+    let mut stale_claim_vector_ids: Vec<String> = Vec::new();
+    let mut stale_entity_candidate_ids: Vec<String> = Vec::new();
+
     for doc in &truly_changed {
         let existing_sources = storage.graph.find_sources_by_uri(&doc.uri)?;
         if !existing_sources.is_empty() {
             for (source_id, _, _) in &existing_sources {
                 affected_triples
                     .extend(storage.graph.get_source_relation_triples(source_id)?);
+                // Capture stale vector entries before removal.
+                for cid in storage.graph.get_claim_ids_for_source(source_id)? {
+                    stale_claim_vector_ids.push(format!("claim:{cid}"));
+                }
+                for eid in storage.graph.get_entity_ids_for_source(source_id)? {
+                    stale_entity_candidate_ids.push(format!("entity:{eid}"));
+                }
             }
             storage.graph.remove_source_by_uri(&doc.uri)?;
             changed += 1;
@@ -140,6 +150,13 @@ pub async fn run_pipeline(root_path: &Path) -> Result<PipelineResult> {
 
     for (source_id, uri) in &deleted_sources {
         affected_triples.extend(storage.graph.get_source_relation_triples(source_id)?);
+        // Capture stale vector entries before removal.
+        for cid in storage.graph.get_claim_ids_for_source(source_id)? {
+            stale_claim_vector_ids.push(format!("claim:{cid}"));
+        }
+        for eid in storage.graph.get_entity_ids_for_source(source_id)? {
+            stale_entity_candidate_ids.push(format!("entity:{eid}"));
+        }
         storage.graph.remove_source_by_uri(uri)?;
         fingerprints.remove(uri);
         deleted += 1;
@@ -243,7 +260,77 @@ pub async fn run_pipeline(root_path: &Path) -> Result<PipelineResult> {
         .update_entity_relations_for_triples(&new_triples)?;
 
     // ─── Phase 9: Vector update ─────────────────────────────────────────
-    update_vector_index_full(&mut storage)?;
+    if deleted == 0 {
+        // Surgical update: remove stale entries, upsert new ones.
+        // Claims are always source-scoped — all stale claim IDs are safe to remove.
+        // Entities may survive if other sources still reference them — only remove
+        // those no longer present in the graph after removal.
+        let current_entity_ids: std::collections::HashSet<String> = storage
+            .graph
+            .get_all_entities()?
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect();
+
+        let mut stale_ids: Vec<&str> = stale_claim_vector_ids.iter().map(|s| s.as_str()).collect();
+        let truly_stale_entity_ids: Vec<String> = stale_entity_candidate_ids
+            .iter()
+            .filter(|id| {
+                // Strip "entity:" prefix to get raw entity ID for graph lookup.
+                let raw = id.strip_prefix("entity:").unwrap_or(id);
+                !current_entity_ids.contains(raw)
+            })
+            .cloned()
+            .collect();
+        stale_ids.extend(truly_stale_entity_ids.iter().map(|s| s.as_str()));
+
+        storage.vector.remove_by_ids(&stale_ids);
+
+        // Build new vector items for affected entities and newly added claims.
+        let all_entities = storage.graph.get_all_entities()?;
+        let affected_set: std::collections::HashSet<&str> =
+            link_output.affected_entity_ids.iter().map(|s| s.as_str()).collect();
+        let new_entity_items: Vec<(String, String, String)> = all_entities
+            .iter()
+            .filter(|(id, _, _)| affected_set.contains(id.as_str()))
+            .map(|(id, name, etype)| {
+                (
+                    format!("entity:{id}"),
+                    format!("{name} ({etype})"),
+                    format!("entity|{id}|{name}|{etype}"),
+                )
+            })
+            .collect();
+
+        let all_claims = storage.graph.get_all_claims_with_sources()?;
+        let added_claim_set: std::collections::HashSet<&str> =
+            link_output.added_claim_ids.iter().map(|s| s.as_str()).collect();
+        let new_claim_items: Vec<(String, String, String)> = all_claims
+            .iter()
+            .filter(|(id, _, _, _, _)| added_claim_set.contains(id.as_str()))
+            .map(|(id, statement, ctype, conf, uri)| {
+                (
+                    format!("claim:{id}"),
+                    statement.clone(),
+                    format!("claim|{id}|{ctype}|{conf}|{uri}"),
+                )
+            })
+            .collect();
+
+        storage.vector.upsert_batch(&new_entity_items)?;
+        storage.vector.upsert_batch(&new_claim_items)?;
+        storage.vector.save()?;
+
+        tracing::info!(
+            "vector index updated surgically: removed {}, added {} entities + {} claims",
+            stale_ids.len(),
+            new_entity_items.len(),
+            new_claim_items.len(),
+        );
+    } else {
+        // Deletions occurred — full rebuild to correctly handle orphaned entries.
+        update_vector_index_full(&mut storage)?;
+    }
 
     // ─── Phase 10: Selective compilation ────────────────────────────────
     let compiler = thinkingroot_compile::Compiler::new(&config)?;
