@@ -19,9 +19,9 @@ pub struct PipelineResult {
     pub early_cutoffs: usize,
 }
 
-pub async fn run_pipeline(root_path: &Path) -> Result<PipelineResult> {
+pub async fn run_pipeline(root_path: &Path, branch: Option<&str>) -> Result<PipelineResult> {
     let config = Config::load_merged(root_path)?;
-    let data_dir = root_path.join(&config.workspace.data_dir);
+    let data_dir = thinkingroot_branch::snapshot::resolve_data_dir(root_path, branch);
     std::fs::create_dir_all(&data_dir)?;
 
     let documents = thinkingroot_parse::parse_directory(root_path, &config.parsers)?;
@@ -30,62 +30,35 @@ pub async fn run_pipeline(root_path: &Path) -> Result<PipelineResult> {
     let mut storage = StorageEngine::init(&data_dir).await?;
     let mut fingerprints = crate::fingerprint::FingerprintStore::load(&data_dir);
 
-    // ─── Phase 1: Diff ─────────────────────────────────────────────────
-    let mut new_documents = Vec::new();
+    // ─── Phase 1: Identify potentially-changed documents ───────────────
+    // (content hash differs from stored — NOT yet removed from graph)
+    let mut potentially_changed: Vec<_> = Vec::new();
     let mut skipped = 0usize;
-    let mut changed = 0usize;
-    let mut deleted = 0usize;
-    let mut affected_triples: Vec<(String, String, String)> = Vec::new();
 
     for doc in &documents {
         let existing_sources = storage.graph.find_sources_by_uri(&doc.uri)?;
-
         if existing_sources.len() == 1
             && !doc.content_hash.0.is_empty()
             && existing_sources[0].1 == doc.content_hash.0
         {
             skipped += 1;
-            continue;
+        } else {
+            potentially_changed.push(doc);
         }
-
-        if !existing_sources.is_empty() {
-            // Capture affected relation triples BEFORE removal.
-            for (source_id, _, _) in &existing_sources {
-                affected_triples
-                    .extend(storage.graph.get_source_relation_triples(source_id)?);
-            }
-            storage.graph.remove_source_by_uri(&doc.uri)?;
-            fingerprints.remove(&doc.uri);
-            changed += 1;
-        }
-
-        new_documents.push(doc.clone());
     }
 
-    // Detect deleted files.
-    let current_uris: HashSet<&str> = documents.iter().map(|doc| doc.uri.as_str()).collect();
+    // Detect deleted files (in graph but not in filesystem).
+    let current_uris: HashSet<&str> = documents.iter().map(|d| d.uri.as_str()).collect();
+    let mut deleted_sources: Vec<(String, String)> = Vec::new(); // (source_id, uri)
     for (source_id, uri, source_type) in storage.graph.get_all_sources()? {
         let is_file_backed = matches!(source_type.as_str(), "File" | "Document");
         if is_file_backed && !current_uris.contains(uri.as_str()) {
-            // Capture affected triples before deletion.
-            affected_triples.extend(storage.graph.get_source_relation_triples(&source_id)?);
-            storage.graph.remove_source_by_uri(&uri)?;
-            fingerprints.remove(&uri);
-            deleted += 1;
+            deleted_sources.push((source_id, uri));
         }
     }
 
-    // ─── Phase 2: Incremental entity relation update for deletions ─────
-    if !affected_triples.is_empty() {
-        affected_triples.sort_unstable();
-        affected_triples.dedup();
-        storage
-            .graph
-            .update_entity_relations_for_triples(&affected_triples)?;
-    }
-
-    // ─── Early exit: truly nothing to process ──────────────────────────
-    if new_documents.is_empty() && changed == 0 && deleted == 0 {
+    // ─── Early exit: nothing to process ────────────────────────────────
+    if potentially_changed.is_empty() && deleted_sources.is_empty() {
         return Ok(PipelineResult {
             files_parsed,
             claims_count: 0,
@@ -99,12 +72,113 @@ pub async fn run_pipeline(root_path: &Path) -> Result<PipelineResult> {
         });
     }
 
-    // If only deletions (no new docs), recompile affected artifacts and exit.
-    if new_documents.is_empty() {
+    // ─── Phase 2: Extract potentially-changed documents (with cache) ───
+    let workspace_id = WorkspaceId::new();
+    let cache_hits;
+    let extraction;
+
+    if potentially_changed.is_empty() {
+        // Only deletions — no extraction needed.
+        cache_hits = 0;
+        extraction = thinkingroot_extract::ExtractionOutput::default();
+    } else {
+        let extractor = thinkingroot_extract::Extractor::new(&config)
+            .await?
+            .with_cache_dir(&data_dir);
+        let raw = extractor
+            .extract_all(
+                &potentially_changed.iter().map(|d| (*d).clone()).collect::<Vec<_>>(),
+                workspace_id,
+            )
+            .await?;
+        cache_hits = raw.cache_hits;
+        extraction = raw;
+    }
+
+    // ─── Phase 3: Fingerprint check ────────────────────────────────────
+    // For each potentially-changed doc, compute a fingerprint of its extracted
+    // claims. If identical to stored fingerprint, skip this source entirely.
+    let mut truly_changed: Vec<_> = Vec::new();
+    let mut fingerprint_cutoffs = 0usize;
+
+    for doc in &potentially_changed {
+        // Collect claims for this source and serialize as fingerprint input.
+        let source_claims: Vec<_> = extraction
+            .claims
+            .iter()
+            .filter(|c| c.source == doc.source_id)
+            .collect();
+        let fp_bytes = serde_json::to_vec(&source_claims)
+            .unwrap_or_default();
+        let fp = crate::fingerprint::FingerprintStore::compute(&fp_bytes);
+
+        if fingerprints.is_unchanged(&doc.uri, &fp) {
+            fingerprint_cutoffs += 1;
+            tracing::debug!("fingerprint early cutoff for {}", doc.uri);
+        } else {
+            fingerprints.update(&doc.uri, fp);
+            truly_changed.push(*doc);
+        }
+    }
+
+    // ─── Phase 4: Remove changed + deleted sources from graph ──────────
+    let mut affected_triples: Vec<(String, String, String)> = Vec::new();
+    let mut changed = 0usize;
+    let mut deleted = 0usize;
+
+    let mut stale_claim_vector_ids: Vec<String> = Vec::new();
+    let mut stale_entity_candidate_ids: Vec<String> = Vec::new();
+
+    for doc in &truly_changed {
+        let existing_sources = storage.graph.find_sources_by_uri(&doc.uri)?;
+        if !existing_sources.is_empty() {
+            for (source_id, _, _) in &existing_sources {
+                affected_triples
+                    .extend(storage.graph.get_source_relation_triples(source_id)?);
+                // Capture stale vector entries before removal.
+                for cid in storage.graph.get_claim_ids_for_source(source_id)? {
+                    stale_claim_vector_ids.push(format!("claim:{cid}"));
+                }
+                for eid in storage.graph.get_entity_ids_for_source(source_id)? {
+                    stale_entity_candidate_ids.push(format!("entity:{eid}"));
+                }
+            }
+            storage.graph.remove_source_by_uri(&doc.uri)?;
+            changed += 1;
+        }
+    }
+
+    for (source_id, uri) in &deleted_sources {
+        affected_triples.extend(storage.graph.get_source_relation_triples(source_id)?);
+        // Capture stale vector entries before removal.
+        for cid in storage.graph.get_claim_ids_for_source(source_id)? {
+            stale_claim_vector_ids.push(format!("claim:{cid}"));
+        }
+        for eid in storage.graph.get_entity_ids_for_source(source_id)? {
+            stale_entity_candidate_ids.push(format!("entity:{eid}"));
+        }
+        storage.graph.remove_source_by_uri(uri)?;
+        fingerprints.remove(uri);
+        deleted += 1;
+    }
+
+    // ─── Phase 5: Incremental entity relation update for removals ──────
+    if !affected_triples.is_empty() {
+        affected_triples.sort_unstable();
+        affected_triples.dedup();
+        storage
+            .graph
+            .update_entity_relations_for_triples(&affected_triples)?;
+    }
+
+    let has_any_changes = changed > 0 || deleted > 0 || !truly_changed.is_empty();
+
+    // If only deletions or all fingerprint hits — no new content to link.
+    if truly_changed.is_empty() {
         update_vector_index_full(&mut storage)?;
 
         let compiler = thinkingroot_compile::Compiler::new(&config)?;
-        let artifacts = compiler.compile_affected(&storage.graph, &data_dir, &[], true)?;
+        let artifacts = compiler.compile_affected(&storage.graph, &data_dir, &[], has_any_changes)?;
 
         let verifier = thinkingroot_verify::Verifier::new(&config);
         let verification = verifier.verify(&storage.graph)?;
@@ -120,37 +194,52 @@ pub async fn run_pipeline(root_path: &Path) -> Result<PipelineResult> {
             contradictions_count: verification.contradictions,
             artifacts_count: artifacts.len(),
             health_score: verification.health_score.as_percentage(),
-            cache_hits: 0,
-            early_cutoffs: 0,
+            cache_hits,
+            early_cutoffs: skipped + fingerprint_cutoffs,
         });
     }
 
-    // ─── Phase 3: Extract (with cache) ─────────────────────────────────
-    let workspace_id = WorkspaceId::new();
-    let extractor = thinkingroot_extract::Extractor::new(&config)
-        .await?
-        .with_cache_dir(&data_dir);
-    let extraction = extractor.extract_all(&new_documents, workspace_id).await?;
-
-    let claims_count = extraction.claims.len();
-    let entities_count = extraction.entities.len();
-    let relations_count = extraction.relations.len();
-
-    // ─── Phase 4: Insert sources ───────────────────────────────────────
-    for doc in &new_documents {
+    // ─── Phase 6: Insert sources for truly-changed documents ───────────
+    for doc in &truly_changed {
         let source = thinkingroot_core::Source::new(doc.uri.clone(), doc.source_type)
             .with_id(doc.source_id)
             .with_hash(doc.content_hash.clone());
         storage.graph.insert_source(&source)?;
     }
 
-    // ─── Phase 5: Link ─────────────────────────────────────────────────
-    let linker = thinkingroot_link::Linker::new(&storage.graph);
-    let link_output = linker.link(extraction)?;
+    // Filter extraction to only truly-changed sources.
+    let truly_changed_ids: HashSet<thinkingroot_core::types::SourceId> =
+        truly_changed.iter().map(|d| d.source_id).collect();
 
-    // ─── Phase 6: Incremental entity relation update for new sources ───
+    let filtered_extraction = thinkingroot_extract::ExtractionOutput {
+        claims: extraction
+            .claims
+            .into_iter()
+            .filter(|c| truly_changed_ids.contains(&c.source))
+            .collect(),
+        entities: extraction.entities,
+        relations: extraction
+            .relations
+            .into_iter()
+            .filter(|r| truly_changed_ids.contains(&r.source))
+            .collect(),
+        claim_entity_names: extraction.claim_entity_names,
+        sources_processed: truly_changed.len(),
+        chunks_processed: extraction.chunks_processed,
+        cache_hits: extraction.cache_hits,
+    };
+
+    let claims_count = filtered_extraction.claims.len();
+    let entities_count = filtered_extraction.entities.len();
+    let relations_count = filtered_extraction.relations.len();
+
+    // ─── Phase 7: Link ─────────────────────────────────────────────────
+    let linker = thinkingroot_link::Linker::new(&storage.graph);
+    let link_output = linker.link(filtered_extraction)?;
+
+    // ─── Phase 8: Incremental entity relation update for new sources ───
     let mut new_triples: Vec<(String, String, String)> = Vec::new();
-    for doc in &new_documents {
+    for doc in &truly_changed {
         new_triples.extend(
             storage
                 .graph
@@ -170,10 +259,80 @@ pub async fn run_pipeline(root_path: &Path) -> Result<PipelineResult> {
         .graph
         .update_entity_relations_for_triples(&new_triples)?;
 
-    // ─── Phase 7: Incremental vector update ────────────────────────────
-    update_vector_index_full(&mut storage)?;
+    // ─── Phase 9: Vector update ─────────────────────────────────────────
+    if deleted == 0 {
+        // Surgical update: remove stale entries, upsert new ones.
+        // Claims are always source-scoped — all stale claim IDs are safe to remove.
+        // Entities may survive if other sources still reference them — only remove
+        // those no longer present in the graph after removal.
+        let current_entity_ids: std::collections::HashSet<String> = storage
+            .graph
+            .get_all_entities()?
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect();
 
-    // ─── Phase 8: Selective compilation ────────────────────────────────
+        let mut stale_ids: Vec<&str> = stale_claim_vector_ids.iter().map(|s| s.as_str()).collect();
+        let truly_stale_entity_ids: Vec<String> = stale_entity_candidate_ids
+            .iter()
+            .filter(|id| {
+                // Strip "entity:" prefix to get raw entity ID for graph lookup.
+                let raw = id.strip_prefix("entity:").unwrap_or(id);
+                !current_entity_ids.contains(raw)
+            })
+            .cloned()
+            .collect();
+        stale_ids.extend(truly_stale_entity_ids.iter().map(|s| s.as_str()));
+
+        storage.vector.remove_by_ids(&stale_ids);
+
+        // Build new vector items for affected entities and newly added claims.
+        let all_entities = storage.graph.get_all_entities()?;
+        let affected_set: std::collections::HashSet<&str> =
+            link_output.affected_entity_ids.iter().map(|s| s.as_str()).collect();
+        let new_entity_items: Vec<(String, String, String)> = all_entities
+            .iter()
+            .filter(|(id, _, _)| affected_set.contains(id.as_str()))
+            .map(|(id, name, etype)| {
+                (
+                    format!("entity:{id}"),
+                    format!("{name} ({etype})"),
+                    format!("entity|{id}|{name}|{etype}"),
+                )
+            })
+            .collect();
+
+        let all_claims = storage.graph.get_all_claims_with_sources()?;
+        let added_claim_set: std::collections::HashSet<&str> =
+            link_output.added_claim_ids.iter().map(|s| s.as_str()).collect();
+        let new_claim_items: Vec<(String, String, String)> = all_claims
+            .iter()
+            .filter(|(id, _, _, _, _)| added_claim_set.contains(id.as_str()))
+            .map(|(id, statement, ctype, conf, uri)| {
+                (
+                    format!("claim:{id}"),
+                    statement.clone(),
+                    format!("claim|{id}|{ctype}|{conf}|{uri}"),
+                )
+            })
+            .collect();
+
+        storage.vector.upsert_batch(&new_entity_items)?;
+        storage.vector.upsert_batch(&new_claim_items)?;
+        storage.vector.save()?;
+
+        tracing::info!(
+            "vector index updated surgically: removed {}, added {} entities + {} claims",
+            stale_ids.len(),
+            new_entity_items.len(),
+            new_claim_items.len(),
+        );
+    } else {
+        // Deletions occurred — full rebuild to correctly handle orphaned entries.
+        update_vector_index_full(&mut storage)?;
+    }
+
+    // ─── Phase 10: Selective compilation ────────────────────────────────
     let compiler = thinkingroot_compile::Compiler::new(&config)?;
     let artifacts = compiler.compile_affected(
         &storage.graph,
@@ -182,7 +341,7 @@ pub async fn run_pipeline(root_path: &Path) -> Result<PipelineResult> {
         true,
     )?;
 
-    // ─── Phase 9: Verify + persist ─────────────────────────────────────
+    // ─── Phase 11: Verify + persist ─────────────────────────────────────
     let verifier = thinkingroot_verify::Verifier::new(&config);
     let verification = verifier.verify(&storage.graph)?;
 
@@ -197,8 +356,8 @@ pub async fn run_pipeline(root_path: &Path) -> Result<PipelineResult> {
         contradictions_count: verification.contradictions,
         artifacts_count: artifacts.len(),
         health_score: verification.health_score.as_percentage(),
-        cache_hits: 0,        // TODO: plumb from extractor
-        early_cutoffs: skipped,
+        cache_hits,
+        early_cutoffs: skipped + fingerprint_cutoffs,
     })
 }
 

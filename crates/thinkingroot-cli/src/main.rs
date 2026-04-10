@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 use console::style;
 use tracing_subscriber::EnvFilter;
 
+mod branch_cmd;
 mod mcp_config;
 mod pipeline;
 mod serve;
@@ -39,6 +40,9 @@ enum Commands {
     Compile {
         /// Path to the directory to compile
         path: PathBuf,
+        /// Compile into a specific branch instead of main
+        #[arg(long)]
+        branch: Option<String>,
     },
     /// Show the knowledge health score
     Health {
@@ -101,6 +105,9 @@ enum Commands {
         /// Generate and install an OS-native service file (launchd/systemd/Windows)
         #[arg(long)]
         install_service: bool,
+        /// Serve a specific branch instead of main
+        #[arg(long)]
+        branch: Option<String>,
     },
     /// First-time guided setup wizard
     Setup,
@@ -128,6 +135,67 @@ enum Commands {
     Watch {
         /// Path to the directory to watch
         #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+    /// Create or manage knowledge branches
+    Branch {
+        /// Branch name to create
+        name: Option<String>,
+        /// List all active branches
+        #[arg(long)]
+        list: bool,
+        /// Delete (abandon) a branch
+        #[arg(long)]
+        delete: Option<String>,
+        /// Optional description for the new branch
+        #[arg(long)]
+        description: Option<String>,
+        /// Path to workspace root
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Set the active branch (update HEAD)
+    Checkout {
+        /// Branch name to check out
+        name: String,
+        /// Path to workspace root
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Show semantic diff between a branch and main (Knowledge PR)
+    Diff {
+        /// Branch name to diff against main
+        branch: String,
+        /// Path to workspace root
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Merge a branch into main (runs health CI gate)
+    Merge {
+        /// Branch name to merge
+        branch: String,
+        /// Path to workspace root
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+        /// Skip health CI gate
+        #[arg(long)]
+        force: bool,
+        /// Apply claim deletions from branch to main
+        #[arg(long)]
+        propagate_deletions: bool,
+    },
+    /// Show current branch and workspace status
+    Status {
+        /// Path to workspace root
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Create an immutable named snapshot of the current branch
+    Snapshot {
+        /// Snapshot name
+        name: String,
+        /// Path to workspace root
+        #[arg(short, long, default_value = ".")]
         path: PathBuf,
     },
 }
@@ -171,8 +239,8 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     match cli.command {
-        Some(Commands::Compile { path }) => {
-            run_compile(&path).await?;
+        Some(Commands::Compile { path, branch }) => {
+            run_compile(&path, branch.as_deref()).await?;
         }
         Some(Commands::Health { path }) => {
             run_health(&path).await?;
@@ -196,12 +264,13 @@ async fn main() -> anyhow::Result<()> {
             no_rest,
             no_mcp,
             install_service,
+            branch,
         }) => {
             if install_service {
                 serve::install_service()?;
                 return Ok(());
             }
-            serve::run_serve(port, host, api_key, paths, name, mcp_stdio, no_rest, no_mcp).await?;
+            serve::run_serve(port, host, api_key, paths, name, mcp_stdio, no_rest, no_mcp, branch).await?;
         }
         Some(Commands::Setup) => {
             setup::run_setup().await?;
@@ -225,13 +294,31 @@ async fn main() -> anyhow::Result<()> {
                 .with_context(|| format!("path not found: {}", path.display()))?;
             watch::run_watch(&path).await?;
         }
+        Some(Commands::Branch { name, list, delete, description, path }) => {
+            branch_cmd::handle_branch(&path, name.as_deref(), list, delete.as_deref(), description).await?;
+        }
+        Some(Commands::Checkout { name, path }) => {
+            branch_cmd::handle_checkout(&path, &name).await?;
+        }
+        Some(Commands::Diff { branch, path }) => {
+            branch_cmd::handle_diff(&path, &branch).await?;
+        }
+        Some(Commands::Merge { branch, path, force, propagate_deletions }) => {
+            branch_cmd::handle_merge(&path, &branch, force, propagate_deletions).await?;
+        }
+        Some(Commands::Status { path }) => {
+            branch_cmd::handle_status(&path).await?;
+        }
+        Some(Commands::Snapshot { name, path }) => {
+            branch_cmd::handle_snapshot(&path, &name).await?;
+        }
         None => {
             // `root ./path` shorthand — same as `root compile ./path`.
             if let Some(path) = cli.path {
-                run_compile(&path).await?;
+                run_compile(&path, None).await?;
             } else {
                 // No args: compile current directory.
-                run_compile(&PathBuf::from(".")).await?;
+                run_compile(&PathBuf::from("."), None).await?;
             }
         }
     }
@@ -239,7 +326,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run_compile(path: &PathBuf) -> anyhow::Result<()> {
+async fn run_compile(path: &PathBuf, branch: Option<&str>) -> anyhow::Result<()> {
     let path = std::fs::canonicalize(path)
         .with_context(|| format!("path not found: {}", path.display()))?;
 
@@ -251,7 +338,7 @@ async fn run_compile(path: &PathBuf) -> anyhow::Result<()> {
     );
 
     let start = Instant::now();
-    let result = pipeline::run_pipeline(&path).await?;
+    let result = pipeline::run_pipeline(&path, branch).await?;
 
     let elapsed = start.elapsed();
     println!();

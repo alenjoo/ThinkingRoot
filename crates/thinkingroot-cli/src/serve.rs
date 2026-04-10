@@ -47,6 +47,7 @@ pub async fn run_graph(port: u16, path: std::path::PathBuf) -> anyhow::Result<()
         false,
         false,
         false, // enable MCP
+        None,  // branch
     )
     .await
 }
@@ -74,6 +75,7 @@ pub async fn run_serve(
     mcp_stdio: bool,
     no_rest: bool,
     no_mcp: bool,
+    branch: Option<String>,
 ) -> anyhow::Result<()> {
     if no_rest && no_mcp {
         anyhow::bail!("--no-rest and --no-mcp cannot be used together: nothing to serve");
@@ -116,6 +118,14 @@ pub async fn run_serve(
 
     let mut engine = QueryEngine::new();
     for (ws_name, abs_path, _ws_port) in &resolved_paths {
+        if branch.is_some() {
+            // --branch is requested but mount_data_dir is not yet implemented.
+            // Fall back to main and warn the user.
+            tracing::warn!(
+                "--branch flag is not yet supported for serve; mounting main data dir for workspace '{}'",
+                ws_name
+            );
+        }
         engine.mount(ws_name.clone(), abs_path.clone()).await?;
         tracing::info!("mounted workspace '{}' from {}", ws_name, abs_path.display());
     }

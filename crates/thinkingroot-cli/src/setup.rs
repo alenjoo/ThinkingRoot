@@ -265,7 +265,7 @@ pub async fn run_setup() -> anyhow::Result<()> {
         pb.set_message("Compiling knowledge base...");
         pb.enable_steady_tick(std::time::Duration::from_millis(80));
 
-        match crate::pipeline::run_pipeline(&abs_ws_path).await {
+        match crate::pipeline::run_pipeline(&abs_ws_path, None).await {
             Ok(result) => {
                 pb.finish_and_clear();
                 println!(

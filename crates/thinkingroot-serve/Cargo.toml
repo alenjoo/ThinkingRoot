@@ -11,11 +11,12 @@ rust-version.workspace = true
 ## Enable vector/semantic search. Disable with --no-default-features to build
 ## lightweight test binaries that don't link fastembed + ONNX Runtime.
 default = ["vector"]
-vector = ["thinkingroot-graph/vector"]
+vector = ["thinkingroot-graph/vector", "thinkingroot-branch/vector"]
 
 [dependencies]
 thinkingroot-core = { workspace = true }
 thinkingroot-graph = { workspace = true }
+thinkingroot-branch = { workspace = true }
 thinkingroot-parse = { workspace = true }
 thinkingroot-extract = { workspace = true }
 thinkingroot-link = { workspace = true }

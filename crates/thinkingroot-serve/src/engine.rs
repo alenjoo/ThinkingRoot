@@ -539,7 +539,7 @@ impl QueryEngine {
     /// Run the full pipeline for a mounted workspace.
     pub async fn compile(&self, ws: &str) -> Result<PipelineResult> {
         let handle = self.get_workspace(ws)?;
-        crate::pipeline::run_pipeline(&handle.root_path).await
+        crate::pipeline::run_pipeline(&handle.root_path, None).await
     }
 
     /// Search the workspace using vector similarity + keyword fallback.

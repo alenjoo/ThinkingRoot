@@ -1069,7 +1069,7 @@ impl GraphStore {
         Ok(())
     }
 
-    fn get_claim_ids_for_source(&self, source_id: &str) -> Result<Vec<String>> {
+    pub fn get_claim_ids_for_source(&self, source_id: &str) -> Result<Vec<String>> {
         let mut params = BTreeMap::new();
         params.insert("sid".into(), DataValue::Str(source_id.into()));
 
@@ -1077,6 +1077,29 @@ impl GraphStore {
             .db
             .run_script(
                 "?[id] := *claims{id, source_id: $sid}",
+                params,
+                ScriptMutability::Immutable,
+            )
+            .map_err(|e| Error::GraphStorage(format!("query failed: {e}")))?;
+
+        Ok(result
+            .rows
+            .iter()
+            .map(|row| dv_to_string(&row[0]))
+            .collect())
+    }
+
+    /// Get entity IDs that have at least one claim from this source.
+    /// Used to identify candidate stale vector entries before source removal.
+    pub fn get_entity_ids_for_source(&self, source_id: &str) -> Result<Vec<String>> {
+        let mut params = BTreeMap::new();
+        params.insert("sid".into(), DataValue::Str(source_id.into()));
+
+        let result = self
+            .db
+            .run_script(
+                "?[entity_id] := *claim_source_edges{claim_id, source_id: $sid}, \
+                 *claim_entity_edges{claim_id, entity_id}",
                 params,
                 ScriptMutability::Immutable,
             )
@@ -1352,6 +1375,53 @@ impl GraphStore {
         }
 
         Ok(())
+    }
+
+    /// Returns a map from claim_id → list of entity canonical names linked to that claim.
+    /// Only claim IDs present in `claim_ids` are included in the result.
+    pub fn get_entity_names_for_claims(
+        &self,
+        claim_ids: &[&str],
+    ) -> Result<std::collections::HashMap<String, Vec<String>>> {
+        if claim_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        let result = self.query_read(
+            "?[claim_id, name] := *claim_entity_edges{claim_id, entity_id: eid}, \
+             *entities{id: eid, canonical_name: name}",
+        )?;
+
+        let id_set: std::collections::HashSet<&str> = claim_ids.iter().copied().collect();
+        let mut map: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+
+        for row in &result.rows {
+            let cid = dv_to_string(&row[0]);
+            let name = dv_to_string(&row[1]);
+            if id_set.contains(cid.as_str()) {
+                map.entry(cid).or_default().push(name);
+            }
+        }
+
+        Ok(map)
+    }
+
+    /// Find an entity ID by its canonical name. Returns `None` if not found.
+    pub fn find_entity_id_by_name(&self, name: &str) -> Result<Option<String>> {
+        let mut params = BTreeMap::new();
+        params.insert("name".into(), DataValue::Str(name.into()));
+
+        let result = self
+            .db
+            .run_script(
+                "?[id] := *entities{id, canonical_name: $name}",
+                params,
+                ScriptMutability::Immutable,
+            )
+            .map_err(|e| Error::GraphStorage(format!("query failed: {e}")))?;
+
+        Ok(result.rows.first().map(|row| dv_to_string(&row[0])))
     }
 
     #[allow(clippy::type_complexity)]
@@ -1701,5 +1771,102 @@ mod tests {
         assert_eq!(after.len(), 1);
         let (_, _, _, _, _, final_strength) = after[0];
         assert_eq!(final_strength, 0.5, "max should now be 0.5 (src_b's contribution)");
+    }
+
+    #[test]
+    fn get_entity_ids_for_source_returns_linked_entities() {
+        let store = mem_store();
+
+        let entity = thinkingroot_core::types::Entity::new("Alpha", thinkingroot_core::types::EntityType::System);
+        store.insert_entity(&entity).unwrap();
+
+        let source = thinkingroot_core::Source::new(
+            "test://a.md".into(),
+            thinkingroot_core::types::SourceType::File,
+        );
+        store.insert_source(&source).unwrap();
+
+        let workspace = thinkingroot_core::types::WorkspaceId::new();
+        let claim = thinkingroot_core::types::Claim::new(
+            "Alpha is fast",
+            thinkingroot_core::types::ClaimType::Fact,
+            source.id,
+            workspace,
+        );
+        store.insert_claim(&claim).unwrap();
+        store.link_claim_to_source(&claim.id.to_string(), &source.id.to_string()).unwrap();
+        store.link_claim_to_entity(&claim.id.to_string(), &entity.id.to_string()).unwrap();
+
+        let entity_ids = store.get_entity_ids_for_source(&source.id.to_string()).unwrap();
+        assert_eq!(entity_ids.len(), 1);
+        assert_eq!(entity_ids[0], entity.id.to_string());
+
+        // Different source: no claims linked → empty result.
+        let source2 = thinkingroot_core::Source::new(
+            "test://b.md".into(),
+            thinkingroot_core::types::SourceType::File,
+        );
+        store.insert_source(&source2).unwrap();
+        let entity_ids2 = store.get_entity_ids_for_source(&source2.id.to_string()).unwrap();
+        assert!(entity_ids2.is_empty());
+    }
+
+    #[test]
+    fn test_get_entity_names_for_claims() {
+        let store = mem_store();
+
+        let source = thinkingroot_core::Source::new(
+            "test.md".to_string(),
+            thinkingroot_core::types::SourceType::File,
+        );
+        store.insert_source(&source).unwrap();
+
+        let workspace_id = thinkingroot_core::types::WorkspaceId::new();
+        let entity = thinkingroot_core::types::Entity::new(
+            "AuthService",
+            thinkingroot_core::types::EntityType::Service,
+        );
+        store.insert_entity(&entity).unwrap();
+
+        let claim = thinkingroot_core::types::Claim::new(
+            "AuthService uses JWT",
+            thinkingroot_core::types::ClaimType::Fact,
+            source.id,
+            workspace_id,
+        );
+        store.insert_claim(&claim).unwrap();
+        store
+            .link_claim_to_entity(&claim.id.to_string(), &entity.id.to_string())
+            .unwrap();
+
+        let claim_id_str = claim.id.to_string();
+        let map = store
+            .get_entity_names_for_claims(&[claim_id_str.as_str()])
+            .unwrap();
+        assert_eq!(
+            map.get(&claim_id_str).unwrap(),
+            &vec!["AuthService".to_string()]
+        );
+
+        // An unrelated claim_id should not appear in the map.
+        let empty_map = store.get_entity_names_for_claims(&[]).unwrap();
+        assert!(empty_map.is_empty());
+    }
+
+    #[test]
+    fn test_find_entity_id_by_name() {
+        let store = mem_store();
+
+        let entity = thinkingroot_core::types::Entity::new(
+            "MyService",
+            thinkingroot_core::types::EntityType::Service,
+        );
+        store.insert_entity(&entity).unwrap();
+
+        let found = store.find_entity_id_by_name("MyService").unwrap();
+        assert_eq!(found, Some(entity.id.to_string()));
+
+        let not_found = store.find_entity_id_by_name("NonExistent").unwrap();
+        assert!(not_found.is_none());
     }
 }
