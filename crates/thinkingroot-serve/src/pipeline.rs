@@ -77,15 +77,17 @@ pub async fn run_pipeline(root_path: &Path) -> Result<PipelineResult> {
 
     // ─── Phase 2: Incremental entity relation update for deletions ─────
     if !affected_triples.is_empty() {
+        affected_triples.sort_unstable();
+        affected_triples.dedup();
         storage
             .graph
             .update_entity_relations_for_triples(&affected_triples)?;
     }
 
-    // ─── Early exit: nothing to process ────────────────────────────────
-    if documents.is_empty() && changed == 0 && deleted == 0 {
+    // ─── Early exit: truly nothing to process ──────────────────────────
+    if new_documents.is_empty() && changed == 0 && deleted == 0 {
         return Ok(PipelineResult {
-            files_parsed: 0,
+            files_parsed,
             claims_count: 0,
             entities_count: 0,
             relations_count: 0,
@@ -93,11 +95,9 @@ pub async fn run_pipeline(root_path: &Path) -> Result<PipelineResult> {
             artifacts_count: 0,
             health_score: 0,
             cache_hits: 0,
-            early_cutoffs: 0,
+            early_cutoffs: skipped,
         });
     }
-
-    let has_any_changes = changed > 0 || deleted > 0;
 
     // If only deletions (no new docs), recompile affected artifacts and exit.
     if new_documents.is_empty() {
@@ -157,6 +157,15 @@ pub async fn run_pipeline(root_path: &Path) -> Result<PipelineResult> {
                 .get_source_relation_triples(&doc.source_id.to_string())?,
         );
     }
+    if new_triples.is_empty() && link_output.relations_linked > 0 {
+        tracing::warn!(
+            "relations were linked ({}) but no source relation triples found; \
+             entity_relations may be stale",
+            link_output.relations_linked
+        );
+    }
+    new_triples.sort_unstable();
+    new_triples.dedup();
     storage
         .graph
         .update_entity_relations_for_triples(&new_triples)?;
@@ -188,8 +197,8 @@ pub async fn run_pipeline(root_path: &Path) -> Result<PipelineResult> {
         contradictions_count: verification.contradictions,
         artifacts_count: artifacts.len(),
         health_score: verification.health_score.as_percentage(),
-        cache_hits: 0,     // TODO: plumb from extractor
-        early_cutoffs: 0,  // TODO: plumb from fingerprint checks
+        cache_hits: 0,        // TODO: plumb from extractor
+        early_cutoffs: skipped,
     })
 }
 
