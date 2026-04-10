@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use console::style;
@@ -36,6 +36,7 @@ pub async fn run_watch(root_path: &Path) -> anyhow::Result<()> {
 
     // Set up file watcher with 300ms debounce.
     let (tx, rx) = mpsc::channel();
+    let rx = Arc::new(Mutex::new(rx));
     let mut debouncer = new_debouncer(Duration::from_millis(300), tx)?;
 
     debouncer
@@ -48,14 +49,20 @@ pub async fn run_watch(root_path: &Path) -> anyhow::Result<()> {
     );
 
     loop {
-        match rx.recv() {
+        // Move the blocking recv off the async executor's worker threads.
+        let rx_clone = Arc::clone(&rx);
+        let recv_result = tokio::task::spawn_blocking(move || rx_clone.lock().unwrap().recv())
+            .await?;
+
+        match recv_result {
             Ok(Ok(events)) => {
-                // Filter out events in .thinkingroot/ directory.
+                // Filter out events inside .thinkingroot/ using exact component matching
+                // to avoid false-positives when a parent dir contains ".thinkingroot".
                 let relevant: Vec<_> = events
                     .iter()
                     .filter(|e| {
                         e.kind == DebouncedEventKind::Any
-                            && !e.path.to_string_lossy().contains(".thinkingroot")
+                            && !e.path.components().any(|c| c.as_os_str() == ".thinkingroot")
                     })
                     .collect();
 
@@ -93,6 +100,7 @@ pub async fn run_watch(root_path: &Path) -> anyhow::Result<()> {
                 );
             }
             Ok(Err(e)) => {
+                eprintln!("  {} watch error: {e}", style("ERR").red().bold());
                 tracing::warn!("watch error: {e:?}");
             }
             Err(e) => {
