@@ -19,7 +19,11 @@ pub struct Artifact {
 }
 
 impl Artifact {
-    pub fn new(artifact_type: ArtifactType, title: impl Into<String>, content: impl Into<String>) -> Self {
+    pub fn new(
+        artifact_type: ArtifactType,
+        title: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
         Self {
             id: ArtifactId::new(),
             artifact_type,
@@ -109,7 +113,7 @@ impl HealthScore {
     }
 
     pub fn as_percentage(&self) -> u8 {
-        (self.overall * 100.0).round().min(100.0).max(0.0) as u8
+        (self.overall * 100.0).round().clamp(0.0, 100.0) as u8
     }
 }
 

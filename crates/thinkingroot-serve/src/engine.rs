@@ -5,6 +5,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use tokio::sync::Mutex;
 
+pub use crate::pipeline::PipelineResult;
 use thinkingroot_core::{Config, Error, Result};
 use thinkingroot_graph::StorageEngine;
 use thinkingroot_verify::Verifier;
@@ -36,6 +37,7 @@ pub struct EntityDetail {
     pub id: String,
     pub name: String,
     pub entity_type: String,
+    pub aliases: Vec<String>,
     pub claims: Vec<ClaimInfo>,
     pub relations: Vec<RelationInfo>,
 }
@@ -66,6 +68,22 @@ pub struct ArtifactInfo {
 pub struct ArtifactContent {
     pub artifact_type: String,
     pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SourceInfo {
+    pub id: String,
+    pub uri: String,
+    pub source_type: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ContradictionInfo {
+    pub id: String,
+    pub claim_a: String,
+    pub claim_b: String,
+    pub explanation: String,
+    pub status: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -100,17 +118,6 @@ pub struct ClaimFilter {
     pub min_confidence: Option<f64>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct PipelineResult {
-    pub files_parsed: usize,
-    pub claims_count: usize,
-    pub entities_count: usize,
-    pub relations_count: usize,
-    pub contradictions_count: usize,
-    pub artifacts_count: usize,
-    pub health_score: u8,
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +167,12 @@ const ARTIFACT_TYPES: &[&str] = &[
 
 pub struct QueryEngine {
     workspaces: HashMap<String, WorkspaceHandle>,
+}
+
+impl Default for QueryEngine {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl QueryEngine {
@@ -263,14 +276,19 @@ impl QueryEngine {
 
         let claims: Vec<ClaimInfo> = raw_claims
             .into_iter()
-            .map(|(id, statement, claim_type, source_uri, confidence)| ClaimInfo {
-                id,
-                statement,
-                claim_type,
-                confidence,
-                source_uri,
-            })
+            .map(
+                |(id, statement, claim_type, source_uri, confidence)| ClaimInfo {
+                    id,
+                    statement,
+                    claim_type,
+                    confidence,
+                    source_uri,
+                },
+            )
             .collect();
+
+        // Get aliases.
+        let aliases = storage.graph.get_aliases_for_entity(entity_id)?;
 
         // Get relations.
         let raw_relations = storage.graph.get_relations_for_entity(entity_name)?;
@@ -287,6 +305,7 @@ impl QueryEngine {
             id: entity_id.clone(),
             name: entity_name.clone(),
             entity_type: entity_type.clone(),
+            aliases,
             claims,
             relations,
         })
@@ -320,13 +339,15 @@ impl QueryEngine {
                         let conf_ok = filter.min_confidence.is_none_or(|min| *conf >= min);
                         type_ok && conf_ok
                     })
-                    .map(|(id, statement, claim_type, source_uri, confidence)| ClaimInfo {
-                        id,
-                        statement,
-                        claim_type,
-                        confidence,
-                        source_uri,
-                    })
+                    .map(
+                        |(id, statement, claim_type, source_uri, confidence)| ClaimInfo {
+                            id,
+                            statement,
+                            claim_type,
+                            confidence,
+                            source_uri,
+                        },
+                    )
                     .collect();
 
                 let offset = filter.offset.unwrap_or(0);
@@ -353,16 +374,16 @@ impl QueryEngine {
 
         let mut claims: Vec<ClaimInfo> = raw
             .into_iter()
-            .filter(|(_, _, _, conf, _)| {
-                filter.min_confidence.is_none_or(|min| *conf >= min)
-            })
-            .map(|(id, statement, claim_type, confidence, source_uri)| ClaimInfo {
-                id,
-                statement,
-                claim_type,
-                confidence,
-                source_uri,
-            })
+            .filter(|(_, _, _, conf, _)| filter.min_confidence.is_none_or(|min| *conf >= min))
+            .map(
+                |(id, statement, claim_type, confidence, source_uri)| ClaimInfo {
+                    id,
+                    statement,
+                    claim_type,
+                    confidence,
+                    source_uri,
+                },
+            )
             .collect();
 
         let offset = filter.offset.unwrap_or(0);
@@ -427,6 +448,23 @@ impl QueryEngine {
         Ok(result)
     }
 
+    /// List all sources in the workspace.
+    pub async fn list_sources(&self, ws: &str) -> Result<Vec<SourceInfo>> {
+        let handle = self.get_workspace(ws)?;
+        let storage = handle.storage.lock().await;
+
+        Ok(storage
+            .graph
+            .get_all_sources()?
+            .into_iter()
+            .map(|(id, uri, source_type)| SourceInfo {
+                id,
+                uri,
+                source_type,
+            })
+            .collect())
+    }
+
     /// Read the content of a specific artifact.
     pub async fn get_artifact(&self, ws: &str, artifact_type: &str) -> Result<ArtifactContent> {
         let handle = self.get_workspace(ws)?;
@@ -481,8 +519,8 @@ impl QueryEngine {
             });
         }
 
-        let content =
-            std::fs::read_to_string(&artifact_path).map_err(|e| Error::io_path(&artifact_path, e))?;
+        let content = std::fs::read_to_string(&artifact_path)
+            .map_err(|e| Error::io_path(&artifact_path, e))?;
 
         Ok(ArtifactContent {
             artifact_type: artifact_type.to_string(),
@@ -496,6 +534,12 @@ impl QueryEngine {
         let storage = handle.storage.lock().await;
         let verifier = Verifier::new(&handle.config);
         verifier.verify(&storage.graph)
+    }
+
+    /// Run the full pipeline for a mounted workspace.
+    pub async fn compile(&self, ws: &str) -> Result<PipelineResult> {
+        let handle = self.get_workspace(ws)?;
+        crate::pipeline::run_pipeline(&handle.root_path).await
     }
 
     /// Search the workspace using vector similarity + keyword fallback.
@@ -590,8 +634,16 @@ impl QueryEngine {
         }
 
         // Sort by descending relevance and truncate.
-        entity_hits.sort_by(|a, b| b.relevance.partial_cmp(&a.relevance).unwrap_or(std::cmp::Ordering::Equal));
-        claim_hits.sort_by(|a, b| b.relevance.partial_cmp(&a.relevance).unwrap_or(std::cmp::Ordering::Equal));
+        entity_hits.sort_by(|a, b| {
+            b.relevance
+                .partial_cmp(&a.relevance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        claim_hits.sort_by(|a, b| {
+            b.relevance
+                .partial_cmp(&a.relevance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         entity_hits.truncate(top_k);
         claim_hits.truncate(top_k);
 
@@ -599,6 +651,27 @@ impl QueryEngine {
             entities: entity_hits,
             claims: claim_hits,
         })
+    }
+
+    /// List tracked contradictions in the workspace.
+    pub async fn list_contradictions(&self, ws: &str) -> Result<Vec<ContradictionInfo>> {
+        let handle = self.get_workspace(ws)?;
+        let storage = handle.storage.lock().await;
+
+        Ok(storage
+            .graph
+            .get_contradictions()?
+            .into_iter()
+            .map(
+                |(id, claim_a, claim_b, explanation, status)| ContradictionInfo {
+                    id,
+                    claim_a,
+                    claim_b,
+                    explanation,
+                    status,
+                },
+            )
+            .collect())
     }
 
     /// Alias for `health()` — delegates to the same verification logic.

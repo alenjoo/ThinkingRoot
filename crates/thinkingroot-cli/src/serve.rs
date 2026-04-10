@@ -64,6 +64,7 @@ fn open_browser(url: &str) -> std::io::Result<()> {
 }
 
 /// Launch the ThinkingRoot server (REST API + MCP).
+#[allow(clippy::too_many_arguments)]
 pub async fn run_serve(
     port: u16,
     host: String,

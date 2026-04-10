@@ -32,7 +32,7 @@ pub fn walk(root: &Path, config: &ParserConfig) -> Result<Vec<PathBuf>> {
     for entry in builder.build() {
         let entry = entry.map_err(|e| Error::Io {
             path: Some(root.to_path_buf()),
-            source: std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+            source: std::io::Error::other(e.to_string()),
         })?;
 
         let path = entry.path();
@@ -45,7 +45,11 @@ pub fn walk(root: &Path, config: &ParserConfig) -> Result<Vec<PathBuf>> {
         // Check file size limit.
         if let Ok(meta) = path.metadata() {
             if meta.len() > config.max_file_size {
-                tracing::debug!("skipping large file: {} ({} bytes)", path.display(), meta.len());
+                tracing::debug!(
+                    "skipping large file: {} ({} bytes)",
+                    path.display(),
+                    meta.len()
+                );
                 continue;
             }
         }
@@ -57,7 +61,11 @@ pub fn walk(root: &Path, config: &ParserConfig) -> Result<Vec<PathBuf>> {
                 .and_then(|e| e.to_str())
                 .unwrap_or("")
                 .to_lowercase();
-            if !config.include_extensions.iter().any(|e| e.to_lowercase() == ext) {
+            if !config
+                .include_extensions
+                .iter()
+                .any(|e| e.to_lowercase() == ext)
+            {
                 continue;
             }
         }

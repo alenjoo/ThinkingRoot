@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::Context as _;
@@ -425,7 +425,7 @@ async fn run_query(path: &PathBuf, query: &str, top_k: usize) -> anyhow::Result<
     Ok(())
 }
 
-fn run_init(path: &PathBuf) -> anyhow::Result<()> {
+fn run_init(path: &Path) -> anyhow::Result<()> {
     let data_dir = path.join(".thinkingroot");
 
     if data_dir.exists() {

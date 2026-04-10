@@ -54,14 +54,27 @@ impl<T> fmt::Display for Id<T> {
     }
 }
 
+impl<T> FromStr for Id<T> {
+    type Err = ulid::DecodeError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ulid::from_str(s).map(Self::from_ulid)
+    }
+}
+
 impl<T> Serialize for Id<T> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
         self.inner.to_string().serialize(serializer)
     }
 }
 
 impl<'de, T> Deserialize<'de> for Id<T> {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
         let ulid = Ulid::from_str(&s).map_err(serde::de::Error::custom)?;
         Ok(Self::from_ulid(ulid))
@@ -70,7 +83,7 @@ impl<'de, T> Deserialize<'de> for Id<T> {
 
 impl<T: Eq + PartialEq> PartialOrd for Id<T> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.inner.cmp(&other.inner))
+        Some(self.cmp(other))
     }
 }
 

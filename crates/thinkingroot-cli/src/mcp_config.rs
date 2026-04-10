@@ -53,6 +53,7 @@ pub fn detect_tools() -> Vec<DetectedTool> {
         .collect()
 }
 
+#[allow(clippy::type_complexity)]
 fn tool_defs() -> Vec<(&'static str, Box<dyn Fn() -> Option<PathBuf>>, ConfigFormat)> {
     vec![
         (
