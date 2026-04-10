@@ -23,6 +23,9 @@ pub struct LinkOutput {
     pub claims_linked: usize,
     pub relations_linked: usize,
     pub contradictions_detected: usize,
+    /// Entity IDs that were created or merged in this linking run.
+    /// Used by the pipeline for selective artifact compilation.
+    pub affected_entity_ids: Vec<String>,
 }
 
 impl<'a> Linker<'a> {
@@ -48,11 +51,14 @@ impl<'a> Linker<'a> {
                         entity_id_map.insert(new_entity.id, existing_id);
                         resolution::merge_entities(existing, &new_entity);
                         output.entities_merged += 1;
+                        output.affected_entity_ids.push(existing_id.to_string());
                     }
                 }
                 None => {
                     // New entity.
-                    entity_id_map.insert(new_entity.id, new_entity.id);
+                    let new_id = new_entity.id;
+                    entity_id_map.insert(new_id, new_id);
+                    output.affected_entity_ids.push(new_id.to_string());
                     resolved_entities.push(new_entity);
                     output.entities_created += 1;
                 }
