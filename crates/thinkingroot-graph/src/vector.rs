@@ -143,6 +143,13 @@ mod inner {
             self.index.clear();
         }
 
+        /// Remove specific entries by ID. O(ids.len()).
+        pub fn remove_by_ids(&mut self, ids: &[&str]) {
+            for id in ids {
+                self.index.remove(*id);
+            }
+        }
+
         /// Number of stored embeddings.
         pub fn len(&self) -> usize {
             self.index.len()
@@ -223,6 +230,8 @@ mod inner {
 
         pub fn reset(&mut self) {}
 
+        pub fn remove_by_ids(&mut self, _ids: &[&str]) {}
+
         pub fn len(&self) -> usize {
             0
         }
@@ -251,5 +260,13 @@ mod tests {
         // Access via inner since cosine_similarity is private.
         // This test validates the math — just check the VectorStore compiles.
         let _ = (a, b);
+    }
+
+    #[cfg(feature = "vector")]
+    #[test]
+    fn remove_by_ids_method_exists_on_real_store() {
+        // Verify the method has the expected signature.
+        // Full behavioral test requires an initialized store (async + model download).
+        let _: fn(&mut VectorStore, &[&str]) = VectorStore::remove_by_ids;
     }
 }
