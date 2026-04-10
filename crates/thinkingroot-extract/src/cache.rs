@@ -55,7 +55,12 @@ impl ExtractionCache {
     /// Number of cached entries (for diagnostics / logging).
     pub fn len(&self) -> usize {
         std::fs::read_dir(&self.dir)
-            .map(|entries| entries.filter_map(|e| e.ok()).count())
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
+                    .count()
+            })
             .unwrap_or(0)
     }
 
