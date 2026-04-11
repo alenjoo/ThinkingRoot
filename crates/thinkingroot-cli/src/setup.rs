@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use anyhow::Context as _;
 use console::style;
 use dialoguer::{Confirm, Input, Password, Select, theme::ColorfulTheme};
-use indicatif::{ProgressBar, ProgressStyle};
 use thinkingroot_core::{WorkspaceEntry, WorkspaceRegistry};
 use thinkingroot_core::global_config::{GlobalConfig, ServeConfig};
 use thinkingroot_core::config::{LlmConfig, ProviderConfig, ProvidersConfig};
@@ -253,21 +252,11 @@ pub async fn run_setup() -> anyhow::Result<()> {
         }
     }
 
-    // Compile
+    // Compile — reuse the same world-class progress display used by `root compile`.
     if compile_now {
         println!("  Compiling {}...\n", abs_ws_path.display());
-        let pb = ProgressBar::new_spinner();
-        pb.set_style(
-            ProgressStyle::default_spinner()
-                .template("{spinner:.green} {msg}")
-                .expect("spinner template is a valid static string"),
-        );
-        pb.set_message("Compiling knowledge base...");
-        pb.enable_steady_tick(std::time::Duration::from_millis(80));
-
-        match crate::pipeline::run_pipeline(&abs_ws_path, None).await {
+        match crate::progress::run_compile_progress(&abs_ws_path, None).await {
             Ok(result) => {
-                pb.finish_and_clear();
                 println!(
                     "  {} {} claims · {} entities · {} relations\n",
                     style("✓").green().bold(),
@@ -277,7 +266,6 @@ pub async fn run_setup() -> anyhow::Result<()> {
                 );
             }
             Err(e) => {
-                pb.finish_and_clear();
                 println!("  {} Compilation failed: {}", style("!").yellow(), e);
                 println!("  Run `root compile {}` to retry.", abs_ws_path.display());
             }
