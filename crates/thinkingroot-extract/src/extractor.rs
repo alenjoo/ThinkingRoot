@@ -42,6 +42,12 @@ pub struct ExtractionOutput {
     pub chunks_processed: usize,
     /// Chunks served from the content-addressable extraction cache (no LLM call made).
     pub cache_hits: usize,
+    /// Maps SourceId → the raw source text that was sent to the LLM.
+    /// Used by the grounding system to verify claims against source.
+    pub source_texts: HashMap<SourceId, String>,
+    /// Maps ClaimId → the LLM's cited source_quote for that claim.
+    /// Used by Judge 2 (span attribution) in the grounding system.
+    pub claim_source_quotes: HashMap<ClaimId, String>,
 }
 
 #[derive(Debug)]
@@ -101,6 +107,15 @@ impl Extractor {
 
         let mut output = ExtractionOutput::default();
         output.sources_processed = documents_len;
+
+        // Build source text map from all documents (for grounding).
+        for doc in documents {
+            let text: String = doc.chunks.iter()
+                .map(|c| c.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            output.source_texts.insert(doc.source_id, text);
+        }
 
         // ── Pass 1: separate cache hits from LLM work ──────────────────
         // This gives us an accurate total_chunks denominator before any
@@ -296,6 +311,11 @@ impl Extractor {
                     .claim_entity_names
                     .insert(claim.id, ext_claim.entities.clone());
             }
+            if let Some(ref quote) = ext_claim.source_quote {
+                if !quote.is_empty() {
+                    output.claim_source_quotes.insert(claim.id, quote.clone());
+                }
+            }
             output.claims.push(claim);
         }
 
@@ -433,6 +453,8 @@ impl ExtractionOutput {
         self.sources_processed += other.sources_processed;
         self.chunks_processed += other.chunks_processed;
         self.cache_hits += other.cache_hits;
+        self.source_texts.extend(other.source_texts);
+        self.claim_source_quotes.extend(other.claim_source_quotes);
     }
 }
 
