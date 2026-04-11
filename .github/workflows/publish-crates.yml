@@ -47,11 +47,11 @@ jobs:
           publish thinkingroot-verify
           publish thinkingroot-safety
 
-          # Tier 5: depends on all above
-          publish thinkingroot-serve
-
-          # Tier 6: depends on serve
+          # Tier 5: depends on tiers 1-4
           publish thinkingroot-branch
+
+          # Tier 6: depends on branch + all above
+          publish thinkingroot-serve
 
           # Tier 7: CLI binary — depends on everything
           publish thinkingroot-cli
