@@ -53,10 +53,12 @@ pub async fn run_compile_progress(
     // Receives ProgressEvents and updates bars. Exits when the channel closes
     // (pipeline future completes and drops the sender).
     let bar_driver = async move {
-        let mut extract_start = Instant::now();
-        let mut link_start    = Instant::now();
-        let mut compile_start = Instant::now();
-        let mut verify_start  = Instant::now();
+        // Phase timers: set to Some(Instant::now()) when each phase activates.
+        // None means the phase was skipped (early-exit path) — shows "0.0s".
+        let mut extract_start: Option<Instant> = None;
+        let mut link_start:    Option<Instant> = None;
+        let mut compile_start: Option<Instant> = None;
+        let mut verify_start:  Option<Instant> = None;
 
         while let Some(event) = rx.recv().await {
             match event {
@@ -70,7 +72,7 @@ pub async fn run_compile_progress(
                             style(format!("{:.1}s", parse_start.elapsed().as_secs_f64())).dim(),
                         ),
                     );
-                    extract_start = Instant::now();
+                    extract_start = Some(Instant::now());
                     // Activate extract as spinner until ExtractionStart arrives.
                     activate_spinner(&eb, "waiting for LLM...");
                 }
@@ -92,7 +94,7 @@ pub async fn run_compile_progress(
                 }
 
                 ProgressEvent::ExtractionComplete { claims, entities, cache_hits } => {
-                    let elapsed = extract_start.elapsed();
+                    let elapsed_secs = extract_start.as_ref().map_or(0.0, |t| t.elapsed().as_secs_f64());
                     let total = eb.length().unwrap_or(0) as usize;
                     let cache_note = if cache_hits > 0 && total > 0 {
                         let pct = cache_hits * 100 / total;
@@ -107,10 +109,10 @@ pub async fn run_compile_progress(
                             style(claims).white(),
                             style(entities).white(),
                             cache_note,
-                            style(format!("{:.1}s", elapsed.as_secs_f64())).dim(),
+                            style(format!("{:.1}s", elapsed_secs)).dim(),
                         ),
                     );
-                    link_start = Instant::now();
+                    link_start = Some(Instant::now());
                     activate_spinner(&lb, "resolving entities...");
                 }
 
@@ -126,7 +128,7 @@ pub async fn run_compile_progress(
                 }
 
                 ProgressEvent::LinkComplete { entities, relations, contradictions } => {
-                    let elapsed = link_start.elapsed();
+                    let elapsed_secs = link_start.as_ref().map_or(0.0, |t| t.elapsed().as_secs_f64());
                     let contra_note = if contradictions > 0 {
                         format!(
                             "  {}",
@@ -142,31 +144,31 @@ pub async fn run_compile_progress(
                             style(entities).white(),
                             style(relations).white(),
                             contra_note,
-                            style(format!("{:.1}s", elapsed.as_secs_f64())).dim(),
+                            style(format!("{:.1}s", elapsed_secs)).dim(),
                         ),
                     );
-                    compile_start = Instant::now();
+                    compile_start = Some(Instant::now());
                     activate_spinner(&cb, "generating artifacts...");
                 }
 
                 // ── Compilation ─────────────────────────────────────────
                 ProgressEvent::CompilationDone { artifacts } => {
-                    let elapsed = compile_start.elapsed();
+                    let elapsed_secs = compile_start.as_ref().map_or(0.0, |t| t.elapsed().as_secs_f64());
                     finish_bar(
                         &cb,
                         &format!(
                             "{} artifacts  {}",
                             style(artifacts).white(),
-                            style(format!("{:.1}s", elapsed.as_secs_f64())).dim(),
+                            style(format!("{:.1}s", elapsed_secs)).dim(),
                         ),
                     );
-                    verify_start = Instant::now();
+                    verify_start = Some(Instant::now());
                     activate_spinner(&vb, "checking health...");
                 }
 
                 // ── Verification ────────────────────────────────────────
                 ProgressEvent::VerificationDone { health } => {
-                    let elapsed = verify_start.elapsed();
+                    let elapsed_secs = verify_start.as_ref().map_or(0.0, |t| t.elapsed().as_secs_f64());
                     let health_str = if health >= 80 {
                         style(format!("Health {health}%")).green().to_string()
                     } else if health >= 60 {
@@ -179,7 +181,7 @@ pub async fn run_compile_progress(
                         &format!(
                             "{}  {}",
                             health_str,
-                            style(format!("{:.1}s", elapsed.as_secs_f64())).dim(),
+                            style(format!("{:.1}s", elapsed_secs)).dim(),
                         ),
                     );
                 }
