@@ -4,4 +4,4 @@ pub mod llm;
 pub mod prompts;
 pub mod schema;
 
-pub use extractor::{ExtractionOutput, Extractor};
+pub use extractor::{ChunkProgressFn, ExtractionOutput, Extractor};

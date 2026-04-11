@@ -13,6 +13,10 @@ use crate::schema::ExtractionResult;
 
 type SharedLlm = Arc<LlmClient>;
 
+/// Callback fired after each original chunk is processed (cached or via LLM).
+/// Arguments: (done, total, source_uri)
+pub type ChunkProgressFn = Arc<dyn Fn(usize, usize, &str) + Send + Sync>;
+
 /// The main extraction engine. Takes DocumentIRs and produces
 /// Claims, Entities, and Relations via LLM extraction.
 pub struct Extractor {
@@ -22,6 +26,7 @@ pub struct Extractor {
     /// Approximate max tokens per chunk sent to the LLM (chars / 4 approximation).
     max_chunk_tokens: usize,
     cache: Option<crate::cache::ExtractionCache>,
+    progress: Option<ChunkProgressFn>,
 }
 
 /// The combined output of extraction across all documents.
@@ -57,6 +62,7 @@ impl Extractor {
             min_confidence: config.extraction.min_confidence,
             max_chunk_tokens: config.extraction.max_chunk_tokens,
             cache: None,
+            progress: None,
         })
     }
 
@@ -75,6 +81,13 @@ impl Extractor {
         self
     }
 
+    /// Attach a progress callback. Called once per original chunk processed
+    /// (cache hit or LLM result). Arguments: (done, total, source_uri).
+    pub fn with_progress(mut self, f: ChunkProgressFn) -> Self {
+        self.progress = Some(f);
+        self
+    }
+
     /// Extract knowledge from a batch of documents — all chunks run concurrently.
     pub async fn extract_all(
         &self,
@@ -84,101 +97,157 @@ impl Extractor {
         let semaphore = Arc::new(Semaphore::new(self.concurrency));
         let min_confidence = self.min_confidence;
         let max_chunk_tokens = self.max_chunk_tokens;
-
-        let mut output = ExtractionOutput::default();
         let documents_len = documents.len();
 
-        let mut handles = Vec::new();
+        let mut output = ExtractionOutput::default();
+        output.sources_processed = documents_len;
+
+        // ── Pass 1: separate cache hits from LLM work ──────────────────
+        // This gives us an accurate total_chunks denominator before any
+        // progress events fire, without double-counting sub-chunks.
+        struct ChunkWork {
+            source_id: SourceId,
+            source_uri: String,
+            sub_chunks: Vec<String>,
+            context: String,
+        }
+
+        let mut cache_hits_data: Vec<(SourceId, String, ExtractionResult)> = Vec::new();
+        let mut llm_work: Vec<ChunkWork> = Vec::new();
 
         for doc in documents {
             for chunk in &doc.chunks {
-                let content = chunk.content.clone();
-                let source_id = doc.source_id;
-
-                // Check cache first (keyed on original content before any splitting).
                 if let Some(ref cache) = self.cache {
-                    if let Some(cached_result) = cache.get(&content) {
+                    if let Some(cached) = cache.get(&chunk.content) {
                         tracing::debug!("extraction cache hit for chunk in {}", doc.uri);
-                        let converted = Self::convert_result_static(
-                            cached_result,
-                            source_id,
-                            workspace_id,
-                            min_confidence,
-                        );
-                        output.merge(converted);
-                        output.chunks_processed += 1;
-                        output.cache_hits += 1;
+                        cache_hits_data.push((doc.source_id, doc.uri.clone(), cached));
                         continue;
                     }
                 }
 
-                // Pre-flight: split oversized chunks before sending to LLM.
-                // Use chars/4 as a conservative token approximation.
-                let sub_chunks = split_to_token_budget(&content, max_chunk_tokens);
-                let was_split = sub_chunks.len() > 1;
-                if was_split {
+                let sub_chunks = split_to_token_budget(&chunk.content, max_chunk_tokens);
+                if sub_chunks.len() > 1 {
                     tracing::debug!(
                         "chunk in {} split into {} sub-chunks (estimated {} tokens > limit {})",
                         doc.uri,
                         sub_chunks.len(),
-                        content.len() / 4,
+                        chunk.content.len() / 4,
                         max_chunk_tokens
                     );
                 }
-
-                for sub_content in sub_chunks {
-                    let llm = Arc::clone(&self.llm);
-                    let sem = Arc::clone(&semaphore);
-                    let uri = doc.uri.clone();
-                    let context = prompts::build_context(
+                llm_work.push(ChunkWork {
+                    source_id: doc.source_id,
+                    source_uri: doc.uri.clone(),
+                    sub_chunks,
+                    context: prompts::build_context(
                         &doc.uri,
                         chunk.language.as_deref(),
                         chunk.heading.as_deref(),
-                    );
-
-                    let handle = tokio::spawn(async move {
-                        let _permit = sem.acquire().await.ok()?;
-                        match extract_with_split(llm, sub_content.clone(), context, 0).await {
-                            Ok(result) => Some((source_id, uri, sub_content, result)),
-                            Err(e) => {
-                                tracing::warn!("extraction failed for chunk in {uri}: {e}");
-                                None
-                            }
-                        }
-                    });
-
-                    handles.push(handle);
-                }
+                    ),
+                });
             }
         }
 
-        let sources_processed = documents_len;
+        // Total = cache hits + original LLM chunks (progress denominator).
+        // Sub-chunk splits are an implementation detail — not exposed to callers.
+        let total_chunks = cache_hits_data.len() + llm_work.len();
+        let mut done: usize = 0;
 
-        for handle in handles {
-            if let Ok(Some((source_id, _uri, content, result))) = handle.await {
-                // Write to cache for future runs.
-                if let Some(ref cache) = self.cache {
-                    if let Err(e) = cache.put(&content, &result) {
-                        tracing::warn!("failed to write extraction cache entry: {e}");
+        // ── Process cache hits (instant, no LLM) ───────────────────────
+        output.cache_hits = cache_hits_data.len();
+        for (source_id, source_uri, cached_result) in cache_hits_data {
+            let converted =
+                Self::convert_result_static(cached_result, source_id, workspace_id, min_confidence);
+            output.merge(converted);
+            output.chunks_processed += 1;
+            done += 1;
+            if let Some(ref pf) = self.progress {
+                pf(done, total_chunks, &source_uri);
+            }
+        }
+
+        // ── Spawn LLM tasks — one task per original chunk ───────────────
+        // Sub-chunks are processed sequentially *within* each task so that
+        // progress fires once per original chunk, not once per sub-chunk.
+        // Concurrency is still bounded by the semaphore (one permit per
+        // sub-chunk LLM call, released after each call completes).
+        let mut join_set = tokio::task::JoinSet::new();
+
+        for work in llm_work {
+            let llm = Arc::clone(&self.llm);
+            let sem = Arc::clone(&semaphore);
+
+            join_set.spawn(async move {
+                let source_id = work.source_id;
+                let source_uri = work.source_uri;
+                let mut sub_results: Vec<(String, ExtractionResult)> = Vec::new();
+
+                for sub_content in work.sub_chunks {
+                    let _permit = sem.acquire().await.ok()?;
+                    match extract_with_split(
+                        Arc::clone(&llm),
+                        sub_content.clone(),
+                        work.context.clone(),
+                        0,
+                    )
+                    .await
+                    {
+                        Ok(r) => sub_results.push((sub_content, r)),
+                        Err(e) => {
+                            tracing::warn!(
+                                "extraction failed for chunk in {source_uri}: {e}"
+                            );
+                        }
                     }
                 }
 
-                let converted =
-                    Self::convert_result_static(result, source_id, workspace_id, min_confidence);
-                output.merge(converted);
+                if sub_results.is_empty() {
+                    return None;
+                }
+                Some((source_id, source_uri, sub_results))
+            });
+        }
+
+        // ── Collect in completion order (JoinSet.join_next) ─────────────
+        // JoinSet yields results as each task finishes, giving smooth
+        // progress updates rather than awaiting in spawn order.
+        while let Some(join_result) = join_set.join_next().await {
+            if let Ok(Some((source_id, source_uri, sub_results))) = join_result {
+                // Write each sub-chunk result to cache.
+                if let Some(ref cache) = self.cache {
+                    for (sub_content, extraction_result) in &sub_results {
+                        if let Err(e) = cache.put(sub_content, extraction_result) {
+                            tracing::warn!("failed to write extraction cache entry: {e}");
+                        }
+                    }
+                }
+
+                for (_, extraction_result) in sub_results {
+                    let converted = Self::convert_result_static(
+                        extraction_result,
+                        source_id,
+                        workspace_id,
+                        min_confidence,
+                    );
+                    output.merge(converted);
+                }
                 output.chunks_processed += 1;
+                done += 1;
+                if let Some(ref pf) = self.progress {
+                    pf(done, total_chunks, &source_uri);
+                }
             }
         }
 
-        output.sources_processed = sources_processed;
-
         tracing::info!(
-            "extraction complete: {} claims, {} entities, {} relations from {} sources ({} chunks)",
+            "extraction complete: {} claims, {} entities, {} relations \
+             from {} sources ({} chunks, {} cache hits)",
             output.claims.len(),
             output.entities.len(),
             output.relations.len(),
             output.sources_processed,
             output.chunks_processed,
+            output.cache_hits,
         );
 
         Ok(output)
