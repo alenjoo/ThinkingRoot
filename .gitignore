@@ -13,10 +13,24 @@
 
 # OS
 .DS_Store
+*.swp
+*.swo
+*~
+.fuse_hidden*
 Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
+.Spotlight-V100
+.Trashes
 
 # ThinkingRoot local data
 .thinkingroot/
+.thinkingroot-baseline*
+.thinkingroot-refs*
+test-repo*
+tmp-*
+*.db-shm
+*.db-wal
 
 # Environment
 .env
@@ -30,6 +44,20 @@ __pycache__/
 .venv/
 dist/
 *.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.log
+.ipynb_checkpoints/
+.python-version
+.tox/
+.nox/
+pip-wheel-metadata/
+lib/
+bin/
+include/
 
 # Node
 node_modules/
@@ -37,6 +65,22 @@ node_modules/
 # Internal AI tooling — not for public repo
 .claude/
 CLAUDE.md
+AGENTS.md
 
 # Internal design docs, specs, planning (business strategy, pricing, roadmap details)
 docs/
+
+# Local UI/Branding experiments (not for repo)
+logo_concepts.html
+crates/thinkingroot-serve/src/graph.html
+
+# IDE Polishing
+.vscode/
+.idea/
+.zed/
+.zed-settings.json
+
+# Wasm and Coverage (if applicable)
+pkg/
+target/wasm32-unknown-unknown/
+*.lcov
