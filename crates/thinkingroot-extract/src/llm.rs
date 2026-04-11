@@ -4,6 +4,54 @@ use thinkingroot_core::{Error, Result};
 use crate::prompts;
 use crate::schema::ExtractionResult;
 
+// ── Model-aware output token limits ─────────────────────────────
+
+/// Returns the maximum output tokens for a known model.
+/// Falls back to a conservative 8_192 for unknown models.
+pub fn model_max_output_tokens(model: &str) -> i32 {
+    let m = model.to_lowercase();
+
+    // Claude Haiku 4.5 — 64k output
+    if m.contains("haiku-4-5") || m.contains("haiku-4.5") {
+        return 64_000;
+    }
+    // Claude Haiku 3 — 4k output
+    if m.contains("haiku") {
+        return 4_096;
+    }
+    // Claude Sonnet / Opus 4.x — 8k output
+    if m.contains("sonnet") || m.contains("opus") {
+        return 8_192;
+    }
+    // GPT-4o family — 16k output
+    if m.contains("gpt-4o") || m.contains("gpt-4-turbo") {
+        return 16_384;
+    }
+    // GPT-3.5 — 4k output
+    if m.contains("gpt-3.5") {
+        return 4_096;
+    }
+    // Llama 3.x (Groq, Together, Ollama)
+    if m.contains("llama-3") || m.contains("llama3") {
+        return 8_192;
+    }
+    // Mistral / Mixtral
+    if m.contains("mistral") || m.contains("mixtral") {
+        return 8_192;
+    }
+    // DeepSeek
+    if m.contains("deepseek") {
+        return 8_192;
+    }
+    // Nova (Bedrock)
+    if m.contains("nova") {
+        return 5_120;
+    }
+
+    // Unknown model — safe default that works everywhere
+    8_192
+}
+
 // ── Provider Enum (enum dispatch — zero-cost, no dyn) ────────────
 
 enum Provider {
@@ -14,12 +62,31 @@ enum Provider {
 }
 
 impl Provider {
-    async fn chat(&self, system: &str, user: &str) -> Result<String> {
+    /// Returns (text, was_truncated).
+    async fn chat(&self, system: &str, user: &str) -> Result<(String, bool)> {
         match self {
             Provider::Bedrock(p) => p.chat(system, user).await,
             Provider::OpenAi(p) => p.chat(system, user).await,
             Provider::Anthropic(p) => p.chat(system, user).await,
             Provider::Ollama(p) => p.chat(system, user).await,
+        }
+    }
+
+    fn model_name(&self) -> &str {
+        match self {
+            Provider::Bedrock(p) => &p.model,
+            Provider::OpenAi(p) => &p.model,
+            Provider::Anthropic(p) => &p.model,
+            Provider::Ollama(p) => &p.model,
+        }
+    }
+
+    fn provider_name(&self) -> &str {
+        match self {
+            Provider::Bedrock(_) => "bedrock",
+            Provider::OpenAi(p) => p.provider_name.as_str(),
+            Provider::Anthropic(_) => "anthropic",
+            Provider::Ollama(_) => "ollama",
         }
     }
 }
@@ -29,6 +96,7 @@ impl Provider {
 struct BedrockProvider {
     client: aws_sdk_bedrockruntime::Client,
     model: String,
+    max_output_tokens: i32,
 }
 
 impl BedrockProvider {
@@ -38,18 +106,26 @@ impl BedrockProvider {
             .load()
             .await;
         let client = aws_sdk_bedrockruntime::Client::new(&config);
+        let max_output_tokens = model_max_output_tokens(model);
         Ok(Self {
             client,
             model: model.to_string(),
+            max_output_tokens,
         })
     }
 
-    async fn chat(&self, system: &str, user: &str) -> Result<String> {
+    async fn chat(&self, system: &str, user: &str) -> Result<(String, bool)> {
         use aws_sdk_bedrockruntime::types::{
             ContentBlock, ConversationRole, InferenceConfiguration, Message, SystemContentBlock,
         };
 
-        tracing::debug!("bedrock: sending request to {} (input ~{} chars)", self.model, user.len());
+        tracing::debug!(
+            "bedrock: sending request to {} (input ~{} chars, max_output={})",
+            self.model,
+            user.len(),
+            self.max_output_tokens
+        );
+
         let response = self
             .client
             .converse()
@@ -57,7 +133,7 @@ impl BedrockProvider {
             .system(SystemContentBlock::Text(system.to_string()))
             .inference_config(
                 InferenceConfiguration::builder()
-                    .max_tokens(4096)
+                    .max_tokens(self.max_output_tokens)
                     .build(),
             )
             .messages(
@@ -76,7 +152,22 @@ impl BedrockProvider {
                 provider: format!("bedrock/{}", self.model),
                 message: e.to_string(),
             })?;
-        tracing::debug!("bedrock: got response");
+
+        // Detect truncation via stop reason.
+        let truncated = matches!(
+            response.stop_reason(),
+            aws_sdk_bedrockruntime::types::StopReason::MaxTokens
+        );
+
+        if truncated {
+            tracing::warn!(
+                "bedrock: output truncated for model {} (hit {} token limit)",
+                self.model,
+                self.max_output_tokens
+            );
+        } else {
+            tracing::debug!("bedrock: got complete response");
+        }
 
         let output = response.output().ok_or_else(|| Error::LlmProvider {
             provider: "bedrock".into(),
@@ -87,7 +178,7 @@ impl BedrockProvider {
             aws_sdk_bedrockruntime::types::ConverseOutput::Message(msg) => {
                 for block in msg.content() {
                     if let ContentBlock::Text(text) = block {
-                        return Ok(text.clone());
+                        return Ok((text.clone(), truncated));
                     }
                 }
                 Err(Error::LlmProvider {
@@ -110,19 +201,24 @@ struct OpenAiProvider {
     api_key: String,
     model: String,
     base_url: String,
+    provider_name: String,
+    max_output_tokens: i32,
 }
 
 impl OpenAiProvider {
-    fn new(api_key: &str, model: &str, base_url: &str) -> Self {
+    fn new(api_key: &str, model: &str, base_url: &str, provider_name: &str) -> Self {
+        let max_output_tokens = model_max_output_tokens(model);
         Self {
             client: reqwest::Client::new(),
             api_key: api_key.to_string(),
             model: model.to_string(),
             base_url: base_url.trim_end_matches('/').to_string(),
+            provider_name: provider_name.to_string(),
+            max_output_tokens,
         }
     }
 
-    async fn chat(&self, system: &str, user: &str) -> Result<String> {
+    async fn chat(&self, system: &str, user: &str) -> Result<(String, bool)> {
         let body = serde_json::json!({
             "model": self.model,
             "messages": [
@@ -130,6 +226,7 @@ impl OpenAiProvider {
                 {"role": "user", "content": user},
             ],
             "temperature": 0.1,
+            "max_tokens": self.max_output_tokens,
         });
 
         let resp = self
@@ -140,20 +237,33 @@ impl OpenAiProvider {
             .send()
             .await
             .map_err(|e| Error::LlmProvider {
-                provider: "openai".into(),
+                provider: self.provider_name.clone(),
                 message: e.to_string(),
             })?;
 
         let json: serde_json::Value = resp.json().await.map_err(|e| Error::LlmProvider {
-            provider: "openai".into(),
+            provider: self.provider_name.clone(),
             message: e.to_string(),
         })?;
 
+        // Detect truncation via finish_reason.
+        let finish_reason = json["choices"][0]["finish_reason"].as_str().unwrap_or("");
+        let truncated = finish_reason == "length";
+
+        if truncated {
+            tracing::warn!(
+                "{}: output truncated for model {} (finish_reason=length, max_tokens={})",
+                self.provider_name,
+                self.model,
+                self.max_output_tokens
+            );
+        }
+
         json["choices"][0]["message"]["content"]
             .as_str()
-            .map(|s| s.to_string())
+            .map(|s| (s.to_string(), truncated))
             .ok_or_else(|| Error::LlmProvider {
-                provider: "openai".into(),
+                provider: self.provider_name.clone(),
                 message: format!("unexpected response: {json}"),
             })
     }
@@ -165,21 +275,24 @@ struct AnthropicProvider {
     client: reqwest::Client,
     api_key: String,
     model: String,
+    max_output_tokens: i32,
 }
 
 impl AnthropicProvider {
     fn new(api_key: &str, model: &str) -> Self {
+        let max_output_tokens = model_max_output_tokens(model);
         Self {
             client: reqwest::Client::new(),
             api_key: api_key.to_string(),
             model: model.to_string(),
+            max_output_tokens,
         }
     }
 
-    async fn chat(&self, system: &str, user: &str) -> Result<String> {
+    async fn chat(&self, system: &str, user: &str) -> Result<(String, bool)> {
         let body = serde_json::json!({
             "model": self.model,
-            "max_tokens": 4096,
+            "max_tokens": self.max_output_tokens,
             "system": system,
             "messages": [
                 {"role": "user", "content": user},
@@ -205,9 +318,21 @@ impl AnthropicProvider {
             message: e.to_string(),
         })?;
 
+        // Detect truncation via stop_reason.
+        let stop_reason = json["stop_reason"].as_str().unwrap_or("");
+        let truncated = stop_reason == "max_tokens";
+
+        if truncated {
+            tracing::warn!(
+                "anthropic: output truncated for model {} (stop_reason=max_tokens, max_tokens={})",
+                self.model,
+                self.max_output_tokens
+            );
+        }
+
         json["content"][0]["text"]
             .as_str()
-            .map(|s| s.to_string())
+            .map(|s| (s.to_string(), truncated))
             .ok_or_else(|| Error::LlmProvider {
                 provider: "anthropic".into(),
                 message: format!("unexpected response: {json}"),
@@ -221,18 +346,21 @@ struct OllamaProvider {
     client: reqwest::Client,
     model: String,
     base_url: String,
+    max_output_tokens: i32,
 }
 
 impl OllamaProvider {
     fn new(model: &str, base_url: &str) -> Self {
+        let max_output_tokens = model_max_output_tokens(model);
         Self {
             client: reqwest::Client::new(),
             model: model.to_string(),
             base_url: base_url.trim_end_matches('/').to_string(),
+            max_output_tokens,
         }
     }
 
-    async fn chat(&self, system: &str, user: &str) -> Result<String> {
+    async fn chat(&self, system: &str, user: &str) -> Result<(String, bool)> {
         let body = serde_json::json!({
             "model": self.model,
             "messages": [
@@ -240,6 +368,9 @@ impl OllamaProvider {
                 {"role": "user", "content": user},
             ],
             "stream": false,
+            "options": {
+                "num_predict": self.max_output_tokens,
+            },
         });
 
         let resp = self
@@ -258,9 +389,19 @@ impl OllamaProvider {
             message: e.to_string(),
         })?;
 
+        let finish_reason = json["choices"][0]["finish_reason"].as_str().unwrap_or("");
+        let truncated = finish_reason == "length";
+
+        if truncated {
+            tracing::warn!(
+                "ollama: output truncated for model {} (finish_reason=length)",
+                self.model
+            );
+        }
+
         json["choices"][0]["message"]["content"]
             .as_str()
-            .map(|s| s.to_string())
+            .map(|s| (s.to_string(), truncated))
             .ok_or_else(|| Error::LlmProvider {
                 provider: "ollama".into(),
                 message: format!("unexpected response: {json}"),
@@ -274,9 +415,9 @@ fn resolve_key(cfg: Option<&ProviderConfig>, default_env: &str) -> Result<String
     let env_var = cfg
         .and_then(|p| p.api_key_env.as_deref())
         .unwrap_or(default_env);
-    std::env::var(env_var).map_err(|_| Error::MissingConfig(
-        format!("set the {} environment variable", env_var)
-    ))
+    std::env::var(env_var).map_err(|_| {
+        Error::MissingConfig(format!("set the {} environment variable", env_var))
+    })
 }
 
 fn resolve_key_optional(cfg: Option<&ProviderConfig>) -> String {
@@ -294,12 +435,14 @@ fn resolve_base_url(cfg: Option<&ProviderConfig>, default: &str) -> String {
 fn resolve_base_url_required(cfg: Option<&ProviderConfig>, provider: &str) -> Result<String> {
     cfg.and_then(|p| p.base_url.as_deref())
         .map(|s| s.to_string())
-        .ok_or_else(|| Error::MissingConfig(
-            format!("set [llm.providers.{provider}].base_url in your config")
-        ))
+        .ok_or_else(|| {
+            Error::MissingConfig(format!(
+                "set [llm.providers.{provider}].base_url in your config"
+            ))
+        })
 }
 
-// ── LLM Client (unified wrapper with retry) ─────────────────────
+// ── LLM Client (unified wrapper with retry + truncation handling) ─
 
 pub struct LlmClient {
     provider: Provider,
@@ -325,7 +468,12 @@ impl LlmClient {
                     config.providers.openai.as_ref(),
                     "https://api.openai.com",
                 );
-                Provider::OpenAi(OpenAiProvider::new(&key, &config.extraction_model, &base_url))
+                Provider::OpenAi(OpenAiProvider::new(
+                    &key,
+                    &config.extraction_model,
+                    &base_url,
+                    "openai",
+                ))
             }
             "anthropic" => {
                 let key = resolve_key(config.providers.anthropic.as_ref(), "ANTHROPIC_API_KEY")?;
@@ -344,7 +492,12 @@ impl LlmClient {
                     config.providers.groq.as_ref(),
                     "https://api.groq.com/openai",
                 );
-                Provider::OpenAi(OpenAiProvider::new(&key, &config.extraction_model, &base_url))
+                Provider::OpenAi(OpenAiProvider::new(
+                    &key,
+                    &config.extraction_model,
+                    &base_url,
+                    "groq",
+                ))
             }
             "deepseek" => {
                 let key = resolve_key(config.providers.deepseek.as_ref(), "DEEPSEEK_API_KEY")?;
@@ -352,15 +505,26 @@ impl LlmClient {
                     config.providers.deepseek.as_ref(),
                     "https://api.deepseek.com",
                 );
-                Provider::OpenAi(OpenAiProvider::new(&key, &config.extraction_model, &base_url))
+                Provider::OpenAi(OpenAiProvider::new(
+                    &key,
+                    &config.extraction_model,
+                    &base_url,
+                    "deepseek",
+                ))
             }
             "openrouter" => {
-                let key = resolve_key(config.providers.openrouter.as_ref(), "OPENROUTER_API_KEY")?;
+                let key =
+                    resolve_key(config.providers.openrouter.as_ref(), "OPENROUTER_API_KEY")?;
                 let base_url = resolve_base_url(
                     config.providers.openrouter.as_ref(),
                     "https://openrouter.ai/api/v1",
                 );
-                Provider::OpenAi(OpenAiProvider::new(&key, &config.extraction_model, &base_url))
+                Provider::OpenAi(OpenAiProvider::new(
+                    &key,
+                    &config.extraction_model,
+                    &base_url,
+                    "openrouter",
+                ))
             }
             "together" => {
                 let key = resolve_key(config.providers.together.as_ref(), "TOGETHER_API_KEY")?;
@@ -368,15 +532,26 @@ impl LlmClient {
                     config.providers.together.as_ref(),
                     "https://api.together.xyz/v1",
                 );
-                Provider::OpenAi(OpenAiProvider::new(&key, &config.extraction_model, &base_url))
+                Provider::OpenAi(OpenAiProvider::new(
+                    &key,
+                    &config.extraction_model,
+                    &base_url,
+                    "together",
+                ))
             }
             "perplexity" => {
-                let key = resolve_key(config.providers.perplexity.as_ref(), "PERPLEXITY_API_KEY")?;
+                let key =
+                    resolve_key(config.providers.perplexity.as_ref(), "PERPLEXITY_API_KEY")?;
                 let base_url = resolve_base_url(
                     config.providers.perplexity.as_ref(),
                     "https://api.perplexity.ai",
                 );
-                Provider::OpenAi(OpenAiProvider::new(&key, &config.extraction_model, &base_url))
+                Provider::OpenAi(OpenAiProvider::new(
+                    &key,
+                    &config.extraction_model,
+                    &base_url,
+                    "perplexity",
+                ))
             }
             "litellm" => {
                 let key = resolve_key_optional(config.providers.litellm.as_ref());
@@ -384,12 +559,23 @@ impl LlmClient {
                     config.providers.litellm.as_ref(),
                     "http://localhost:4000",
                 );
-                Provider::OpenAi(OpenAiProvider::new(&key, &config.extraction_model, &base_url))
+                Provider::OpenAi(OpenAiProvider::new(
+                    &key,
+                    &config.extraction_model,
+                    &base_url,
+                    "litellm",
+                ))
             }
             "custom" => {
                 let key = resolve_key(config.providers.custom.as_ref(), "CUSTOM_LLM_API_KEY")?;
-                let base_url = resolve_base_url_required(config.providers.custom.as_ref(), "custom")?;
-                Provider::OpenAi(OpenAiProvider::new(&key, &config.extraction_model, &base_url))
+                let base_url =
+                    resolve_base_url_required(config.providers.custom.as_ref(), "custom")?;
+                Provider::OpenAi(OpenAiProvider::new(
+                    &key,
+                    &config.extraction_model,
+                    &base_url,
+                    "custom",
+                ))
             }
             other => {
                 return Err(Error::MissingConfig(format!(
@@ -399,9 +585,10 @@ impl LlmClient {
         };
 
         tracing::info!(
-            "LLM provider: {} / {}",
+            "LLM provider: {} / {} (max_output_tokens={})",
             config.default_provider,
-            config.extraction_model
+            config.extraction_model,
+            model_max_output_tokens(&config.extraction_model),
         );
 
         Ok(Self {
@@ -416,24 +603,35 @@ impl LlmClient {
     }
 
     /// Extract knowledge from a chunk of text.
+    ///
+    /// If the provider signals truncation, returns `Error::TruncatedOutput`
+    /// so the caller can split the chunk and retry each half.
     pub async fn extract(&self, content: &str, context: &str) -> Result<ExtractionResult> {
         let user_prompt = prompts::build_extraction_prompt(content, context);
-
         let mut last_error = None;
 
         for attempt in 0..self.max_retries {
-            match self
-                .provider
-                .chat(prompts::SYSTEM_PROMPT, &user_prompt)
-                .await
-            {
-                Ok(text) => match parse_extraction_result(&text) {
-                    Ok(result) => return Ok(result),
-                    Err(e) => {
-                        tracing::warn!(attempt = attempt + 1, "failed to parse LLM response: {e}");
-                        last_error = Some(e);
+            match self.provider.chat(prompts::SYSTEM_PROMPT, &user_prompt).await {
+                Ok((text, truncated)) => {
+                    if truncated {
+                        // Don't retry with same content — it'll truncate again.
+                        // Signal the extractor to split the chunk.
+                        return Err(Error::TruncatedOutput {
+                            provider: self.provider.provider_name().to_string(),
+                            model: self.provider.model_name().to_string(),
+                        });
                     }
-                },
+                    match parse_extraction_result(&text) {
+                        Ok(result) => return Ok(result),
+                        Err(e) => {
+                            tracing::warn!(
+                                attempt = attempt + 1,
+                                "failed to parse LLM response: {e}"
+                            );
+                            last_error = Some(e);
+                        }
+                    }
+                }
                 Err(e) => {
                     tracing::warn!(attempt = attempt + 1, "LLM request failed: {e}");
                     last_error = Some(e);
@@ -506,16 +704,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn model_max_tokens_haiku_45() {
+        assert_eq!(model_max_output_tokens("eu.anthropic.claude-haiku-4-5-20251001-v1:0"), 64_000);
+        assert_eq!(model_max_output_tokens("claude-haiku-4-5-20251001"), 64_000);
+    }
+
+    #[test]
+    fn model_max_tokens_haiku_3() {
+        assert_eq!(model_max_output_tokens("claude-3-haiku-20240307"), 4_096);
+        assert_eq!(model_max_output_tokens("anthropic.claude-3-haiku-20240307-v1:0"), 4_096);
+    }
+
+    #[test]
+    fn model_max_tokens_sonnet() {
+        assert_eq!(model_max_output_tokens("claude-sonnet-4-6"), 8_192);
+        assert_eq!(model_max_output_tokens("claude-3-5-sonnet-20241022"), 8_192);
+    }
+
+    #[test]
+    fn model_max_tokens_gpt4o() {
+        assert_eq!(model_max_output_tokens("gpt-4o"), 16_384);
+        assert_eq!(model_max_output_tokens("gpt-4o-mini"), 16_384);
+    }
+
+    #[test]
+    fn model_max_tokens_unknown_falls_back() {
+        assert_eq!(model_max_output_tokens("some-unknown-model-v99"), 8_192);
+    }
+
+    #[test]
     fn resolve_key_uses_default_env_when_config_is_none() {
-        unsafe { std::env::set_var("TEST_DEFAULT_KEY", "mykey"); }
+        unsafe {
+            std::env::set_var("TEST_DEFAULT_KEY", "mykey");
+        }
         let result = resolve_key(None, "TEST_DEFAULT_KEY").unwrap();
         assert_eq!(result, "mykey");
-        unsafe { std::env::remove_var("TEST_DEFAULT_KEY"); }
+        unsafe {
+            std::env::remove_var("TEST_DEFAULT_KEY");
+        }
     }
 
     #[test]
     fn resolve_key_uses_config_env_when_set() {
-        unsafe { std::env::set_var("MY_CUSTOM_ENV", "customkey"); }
+        unsafe {
+            std::env::set_var("MY_CUSTOM_ENV", "customkey");
+        }
         let cfg = thinkingroot_core::config::ProviderConfig {
             api_key_env: Some("MY_CUSTOM_ENV".to_string()),
             base_url: None,
@@ -523,7 +756,9 @@ mod tests {
         };
         let result = resolve_key(Some(&cfg), "IGNORED_DEFAULT").unwrap();
         assert_eq!(result, "customkey");
-        unsafe { std::env::remove_var("MY_CUSTOM_ENV"); }
+        unsafe {
+            std::env::remove_var("MY_CUSTOM_ENV");
+        }
     }
 
     #[test]

@@ -865,6 +865,20 @@ impl GraphStore {
     }
 
     /// Get all source URIs.
+    /// Return `(claim_id, source_id)` pairs for all claims that have a `source_id`
+    /// field in the claims table.  Used by the diff algorithm to carry real SourceIds
+    /// into `DiffClaim` objects rather than synthetic placeholder IDs.
+    pub fn get_claim_source_id_map(&self) -> Result<std::collections::HashMap<String, String>> {
+        let result = self.query_read(
+            "?[id, source_id] := *claims{id, source_id}",
+        )?;
+        Ok(result
+            .rows
+            .iter()
+            .map(|row| (dv_to_string(&row[0]), dv_to_string(&row[1])))
+            .collect())
+    }
+
     pub fn get_all_sources(&self) -> Result<Vec<(String, String, String)>> {
         let result =
             self.query_read("?[id, uri, source_type] := *sources{id, uri, source_type}")?;
@@ -879,6 +893,148 @@ impl GraphStore {
                 )
             })
             .collect())
+    }
+
+    /// Look up a source by its ID and return a reconstructed `Source` struct.
+    /// Returns `None` if no source with that ID exists.
+    pub fn get_source_by_id(&self, id: &str) -> Result<Option<thinkingroot_core::Source>> {
+        use thinkingroot_core::types::{SourceId, SourceType, ContentHash, TrustLevel};
+
+        let mut params = BTreeMap::new();
+        params.insert("id".into(), DataValue::Str(id.into()));
+
+        let result = self.db.run_script(
+            "?[uri, source_type, author, content_hash, trust_level, byte_size] := *sources{id: $id, uri, source_type, author, content_hash, trust_level, byte_size}",
+            params,
+            ScriptMutability::Immutable,
+        ).map_err(|e| Error::GraphStorage(format!("get_source_by_id query failed: {e}")))?;
+
+        let row = match result.rows.first() {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+
+        let uri = dv_to_string(&row[0]);
+        let source_type_str = dv_to_string(&row[1]);
+        let author_str = dv_to_string(&row[2]);
+        let content_hash = ContentHash(dv_to_string(&row[3]));
+        let trust_level_str = dv_to_string(&row[4]);
+        let byte_size = match &row[5] {
+            DataValue::Num(Num::Int(n)) => *n as u64,
+            DataValue::Num(Num::Float(n)) => *n as u64,
+            _ => 0u64,
+        };
+
+        let source_type = match source_type_str.as_str() {
+            "GitCommit" => SourceType::GitCommit,
+            "GitDiff"   => SourceType::GitDiff,
+            "Document"  => SourceType::Document,
+            "ChatMessage" => SourceType::ChatMessage,
+            "WebPage"   => SourceType::WebPage,
+            "Api"       => SourceType::Api,
+            "Manual"    => SourceType::Manual,
+            _           => SourceType::File,
+        };
+
+        let trust_level = match trust_level_str.as_str() {
+            "Quarantined" => TrustLevel::Quarantined,
+            "Untrusted"   => TrustLevel::Untrusted,
+            "Trusted"     => TrustLevel::Trusted,
+            "Verified"    => TrustLevel::Verified,
+            _             => TrustLevel::Unknown,
+        };
+
+        let source_id: SourceId = id.parse().unwrap_or_else(|_| SourceId::new());
+        let mut source = thinkingroot_core::Source::new(uri, source_type)
+            .with_id(source_id)
+            .with_hash(content_hash)
+            .with_size(byte_size)
+            .with_trust(trust_level);
+        if !author_str.is_empty() {
+            source.author = Some(author_str);
+        }
+        Ok(Some(source))
+    }
+
+    /// Look up a single claim by ID and return a reconstructed `Claim` struct.
+    /// Joins `claims` with `claim_temporal` for full temporal metadata.
+    /// Returns `None` if no claim with that ID exists.
+    pub fn get_claim_by_id(&self, id: &str) -> Result<Option<thinkingroot_core::Claim>> {
+        use thinkingroot_core::{Claim, ClaimId, SourceId, WorkspaceId};
+        use thinkingroot_core::types::{ClaimType, Confidence, PipelineVersion, Sensitivity};
+
+        let mut params = BTreeMap::new();
+        params.insert("id".into(), DataValue::Str(id.into()));
+
+        let result = self.db.run_script(
+            r#"?[statement, claim_type, source_id, confidence, sensitivity, workspace_id, created_at] :=
+                *claims{id: $id, statement, claim_type, source_id, confidence, sensitivity, workspace_id, created_at}"#,
+            params,
+            ScriptMutability::Immutable,
+        ).map_err(|e| Error::GraphStorage(format!("get_claim_by_id query failed: {e}")))?;
+
+        let row = match result.rows.first() {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+
+        let statement    = dv_to_string(&row[0]);
+        let claim_type_s = dv_to_string(&row[1]);
+        let source_id_s  = dv_to_string(&row[2]);
+        let confidence   = match &row[3] {
+            DataValue::Num(Num::Float(f)) => *f,
+            DataValue::Num(Num::Int(n))   => *n as f64,
+            _ => 0.8,
+        };
+        let sensitivity_s  = dv_to_string(&row[4]);
+        let workspace_id_s = dv_to_string(&row[5]);
+        let created_ts     = match &row[6] {
+            DataValue::Num(Num::Float(f)) => *f,
+            DataValue::Num(Num::Int(n))   => *n as f64,
+            _ => 0.0,
+        };
+
+        let claim_type = match claim_type_s.as_str() {
+            "Decision"     => ClaimType::Decision,
+            "Opinion"      => ClaimType::Opinion,
+            "Plan"         => ClaimType::Plan,
+            "Requirement"  => ClaimType::Requirement,
+            "Metric"       => ClaimType::Metric,
+            "Definition"   => ClaimType::Definition,
+            "Dependency"   => ClaimType::Dependency,
+            "ApiSignature" => ClaimType::ApiSignature,
+            "Architecture" => ClaimType::Architecture,
+            _              => ClaimType::Fact,
+        };
+
+        let sensitivity = match sensitivity_s.as_str() {
+            "Internal"     => Sensitivity::Internal,
+            "Confidential" => Sensitivity::Confidential,
+            "Restricted"   => Sensitivity::Restricted,
+            _              => Sensitivity::Public,
+        };
+
+        let claim_id   = id.parse::<ClaimId>().unwrap_or_else(|_| ClaimId::new());
+        let source_id  = source_id_s.parse::<SourceId>().unwrap_or_else(|_| SourceId::new());
+        let workspace  = workspace_id_s.parse::<WorkspaceId>().unwrap_or_else(|_| WorkspaceId::new());
+        let created_at = chrono::DateTime::from_timestamp(created_ts as i64, 0)
+            .unwrap_or_else(chrono::Utc::now);
+
+        Ok(Some(Claim {
+            id: claim_id,
+            statement,
+            claim_type,
+            source: source_id,
+            source_span: None,
+            confidence: Confidence::new(confidence),
+            valid_from: created_at,
+            valid_until: None,
+            sensitivity,
+            workspace,
+            extracted_by: PipelineVersion::current(),
+            superseded_by: None,
+            created_at,
+        }))
     }
 
     /// Count orphaned claims (claims whose source_id has no matching source).

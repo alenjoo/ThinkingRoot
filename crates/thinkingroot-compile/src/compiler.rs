@@ -710,3 +710,162 @@ fn sanitize_filename(name: &str) -> String {
         .trim_matches('-')
         .to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::templates::init_templates;
+    use tera::Context;
+
+    // ── sanitize_filename ────────────────────────────────────────────────
+
+    #[test]
+    fn sanitize_spaces_become_dashes() {
+        assert_eq!(sanitize_filename("My Service"), "my-service");
+    }
+
+    #[test]
+    fn sanitize_slashes_become_dashes() {
+        assert_eq!(sanitize_filename("API/v2"), "api-v2");
+    }
+
+    #[test]
+    fn sanitize_leading_trailing_specials_stripped() {
+        assert_eq!(sanitize_filename("--auth--"), "auth");
+    }
+
+    #[test]
+    fn sanitize_preserves_underscores() {
+        assert_eq!(sanitize_filename("some_module"), "some_module");
+    }
+
+    #[test]
+    fn sanitize_empty_string_stays_empty() {
+        assert_eq!(sanitize_filename(""), "");
+    }
+
+    // ── Template initialisation ──────────────────────────────────────────
+
+    #[test]
+    fn all_eight_templates_load_without_error() {
+        // init_templates must succeed — any Tera parse error in a template constant
+        // will surface here before it reaches production.
+        let tera = init_templates().expect("all templates should parse");
+        let names: Vec<&str> = tera
+            .get_template_names()
+            .collect();
+        assert!(names.contains(&"entity_page.md"),       "entity_page.md missing");
+        assert!(names.contains(&"architecture_map.md"),  "architecture_map.md missing");
+        assert!(names.contains(&"contradiction_report.md"), "contradiction_report.md missing");
+        assert!(names.contains(&"health_report.md"),     "health_report.md missing");
+        assert!(names.contains(&"decision_log.md"),      "decision_log.md missing");
+        assert!(names.contains(&"task_pack.md"),         "task_pack.md missing");
+        assert!(names.contains(&"agent_brief.md"),       "agent_brief.md missing");
+        assert!(names.contains(&"runbook.md"),           "runbook.md missing");
+    }
+
+    // ── Template rendering ───────────────────────────────────────────────
+
+    #[test]
+    fn entity_page_renders_name_and_type() {
+        let tera = init_templates().unwrap();
+        let mut ctx = Context::new();
+        ctx.insert("name", "AuthService");
+        ctx.insert("entity_type", "Service");
+        ctx.insert("description", "Handles authentication");
+        ctx.insert("aliases", &Vec::<String>::new());
+        ctx.insert("claims", &Vec::<serde_json::Value>::new());
+        ctx.insert("relations", &Vec::<serde_json::Value>::new());
+        ctx.insert("compiled_at", "2026-01-01T00:00:00Z");
+
+        let out = tera.render("entity_page.md", &ctx).unwrap();
+        assert!(out.contains("# AuthService"), "heading missing");
+        assert!(out.contains("**Type:** Service"), "entity type missing");
+        assert!(out.contains("ThinkingRoot"), "footer missing");
+    }
+
+    #[test]
+    fn entity_page_renders_claims_list() {
+        let tera = init_templates().unwrap();
+        let mut ctx = Context::new();
+        ctx.insert("name", "Database");
+        ctx.insert("entity_type", "Database");
+        ctx.insert("description", "");
+        ctx.insert("aliases", &Vec::<String>::new());
+        ctx.insert("claims", &serde_json::json!([
+            {"claim_type": "Fact", "statement": "Uses PostgreSQL 15.", "confidence": "0.9", "source_uri": "docs/db.md"}
+        ]));
+        ctx.insert("relations", &Vec::<serde_json::Value>::new());
+        ctx.insert("compiled_at", "2026-01-01T00:00:00Z");
+
+        let out = tera.render("entity_page.md", &ctx).unwrap();
+        assert!(out.contains("Uses PostgreSQL 15."), "claim statement missing");
+        assert!(out.contains("docs/db.md"), "source URI missing");
+    }
+
+    #[test]
+    fn architecture_map_renders_source_count() {
+        let tera = init_templates().unwrap();
+        let mut ctx = Context::new();
+        ctx.insert("source_count", &42usize);
+        ctx.insert("entity_count", &10usize);
+        ctx.insert("systems", &Vec::<serde_json::Value>::new());
+        ctx.insert("decisions", &Vec::<serde_json::Value>::new());
+        ctx.insert("compiled_at", "2026-01-01T00:00:00Z");
+
+        let out = tera.render("architecture_map.md", &ctx).unwrap();
+        assert!(out.contains("42 sources"), "source count missing");
+        assert!(out.contains("# Architecture Map"), "heading missing");
+    }
+
+    #[test]
+    fn health_report_renders_score_dimensions() {
+        let tera = init_templates().unwrap();
+        let mut ctx = Context::new();
+        ctx.insert("score", &serde_json::json!({
+            "overall": 87, "freshness": 100,
+            "consistency": 95, "coverage": 60, "provenance": 100
+        }));
+        ctx.insert("stats", &serde_json::json!({
+            "sources": 5, "claims": 120, "entities": 30,
+            "relations": 18, "contradictions": 2, "unresolved": 1, "stale_claims": 3
+        }));
+        ctx.insert("warnings", &Vec::<String>::new());
+        ctx.insert("compiled_at", "2026-01-01T00:00:00Z");
+
+        let out = tera.render("health_report.md", &ctx).unwrap();
+        assert!(out.contains("87%"),  "overall score missing");
+        assert!(out.contains("100%"), "freshness missing");
+        assert!(out.contains("120"),  "claim count missing");
+    }
+
+    #[test]
+    fn decision_log_renders_decisions() {
+        let tera = init_templates().unwrap();
+        let mut ctx = Context::new();
+        ctx.insert("decision_count", &2usize);
+        ctx.insert("source_count", &3usize);
+        ctx.insert("decisions", &serde_json::json!([
+            {"statement": "Use Rust for the core engine.", "confidence": "0.95", "source_uri": "adr/001.md"}
+        ]));
+        ctx.insert("plans", &Vec::<serde_json::Value>::new());
+        ctx.insert("compiled_at", "2026-01-01T00:00:00Z");
+
+        let out = tera.render("decision_log.md", &ctx).unwrap();
+        assert!(out.contains("Use Rust for the core engine."), "decision text missing");
+        assert!(out.contains("adr/001.md"), "source URI missing");
+    }
+
+    #[test]
+    fn contradiction_report_renders_empty_cleanly() {
+        let tera = init_templates().unwrap();
+        let mut ctx = Context::new();
+        ctx.insert("contradiction_count", &0usize);
+        ctx.insert("contradictions", &Vec::<serde_json::Value>::new());
+        ctx.insert("compiled_at", "2026-01-01T00:00:00Z");
+
+        let out = tera.render("contradiction_report.md", &ctx).unwrap();
+        assert!(out.contains("# Contradiction Report"), "heading missing");
+        assert!(out.contains("0 contradictions"), "count missing");
+    }
+}

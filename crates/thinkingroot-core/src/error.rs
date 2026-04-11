@@ -52,6 +52,9 @@ pub enum Error {
     #[error("structured output parse error: {message}")]
     StructuredOutput { message: String },
 
+    #[error("llm output truncated by {provider} (hit output token limit): {model}")]
+    TruncatedOutput { provider: String, model: String },
+
     // --- Compilation ---
     #[error("template error: {0}")]
     Template(String),

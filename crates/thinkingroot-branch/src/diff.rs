@@ -122,6 +122,9 @@ pub fn compute_diff(
     let entity_map: HashMap<String, Vec<String>> =
         branch_graph.get_entity_names_for_claims(&new_claim_id_strs)?;
 
+    // Get real source IDs so merged claims are not orphaned in main.
+    let claim_source_map = branch_graph.get_claim_source_id_map()?;
+
     // Check new claims for contradictions against main claims
     let mut new_claims: Vec<DiffClaim> = Vec::new();
     let mut auto_resolved: Vec<AutoResolution> = Vec::new();
@@ -169,11 +172,18 @@ pub fn compute_diff(
 
         if !contradiction_found {
             let now = Utc::now();
+            // Use the real source ID from the branch graph so that when this claim
+            // is merged into main, the source record can be copied over and the
+            // claim won't be reported as orphaned.
+            let real_source_id = claim_source_map
+                .get(id.as_str())
+                .and_then(|sid| sid.parse::<SourceId>().ok())
+                .unwrap_or_else(SourceId::new);
             let claim = Claim {
                 id: id.parse::<ClaimId>().unwrap_or_else(|_| ClaimId::new()),
                 statement: statement.to_string(),
                 claim_type: parse_claim_type(claim_type_str),
-                source: SourceId::new(), // placeholder — URI is not a SourceId ULID
+                source: real_source_id,
                 source_span: None,
                 confidence: Confidence::new(*confidence),
                 valid_from: now,

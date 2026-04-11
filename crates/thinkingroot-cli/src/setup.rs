@@ -260,7 +260,7 @@ pub async fn run_setup() -> anyhow::Result<()> {
         pb.set_style(
             ProgressStyle::default_spinner()
                 .template("{spinner:.green} {msg}")
-                .unwrap(),
+                .expect("spinner template is a valid static string"),
         );
         pb.set_message("Compiling knowledge base...");
         pb.enable_steady_tick(std::time::Duration::from_millis(80));
@@ -290,7 +290,12 @@ pub async fn run_setup() -> anyhow::Result<()> {
     println!();
     println!(
         "  Global config   {}",
-        style(GlobalConfig::path().unwrap().display()).dim()
+        style(
+            GlobalConfig::path()
+                .unwrap_or_else(|| std::path::PathBuf::from("~/.config/thinkingroot/config.toml"))
+                .display()
+                .to_string()
+        ).dim()
     );
     println!(
         "  Workspace       {}/.thinkingroot/",

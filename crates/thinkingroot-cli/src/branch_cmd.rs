@@ -262,12 +262,13 @@ pub async fn handle_diff(root: &Path, branch: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Handle `root merge <branch> [--force] [--propagate-deletions]`
+/// Handle `root merge <branch> [--force] [--propagate-deletions] [--resolve N=keep-main|keep-branch]`
 pub async fn handle_merge(
     root: &Path,
     branch: &str,
     force: bool,
     propagate_deletions: bool,
+    resolutions: &[String],
 ) -> anyhow::Result<()> {
     let config = Config::load_merged(root)?;
     let mc = &config.merge;
@@ -298,6 +299,96 @@ pub async fn handle_merge(
         diff.blocking_reasons.clear();
     }
 
+    // Apply manual contradiction resolutions specified via --resolve <n>=keep-main|keep-branch.
+    // The index corresponds to the 0-based position in the `needs_review` list as printed by `root diff`.
+    if !resolutions.is_empty() {
+        use thinkingroot_core::{AutoResolution, DiffClaim, DiffStatus};
+        // Collect resolutions, validating format first to fail fast before mutating diff.
+        let parsed: Vec<(usize, &str)> = resolutions.iter().map(|spec| {
+            let (idx_s, resolution) = spec.split_once('=')
+                .ok_or_else(|| anyhow::anyhow!(
+                    "invalid --resolve format '{}': expected <index>=keep-main|keep-branch", spec
+                ))?;
+            let idx: usize = idx_s.trim().parse()
+                .map_err(|_| anyhow::anyhow!(
+                    "--resolve index must be a non-negative integer, got '{}'", idx_s
+                ))?;
+            if idx >= diff.needs_review.len() {
+                anyhow::bail!(
+                    "--resolve index {} out of range: only {} contradiction(s) need review",
+                    idx, diff.needs_review.len()
+                );
+            }
+            if resolution.trim() != "keep-main" && resolution.trim() != "keep-branch" {
+                anyhow::bail!(
+                    "invalid --resolve value '{}': expected keep-main or keep-branch", resolution
+                );
+            }
+            Ok((idx, resolution.trim()))
+        }).collect::<anyhow::Result<_>>()?;
+
+        // Track which needs_review indices to remove after applying all resolutions.
+        let mut remove_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for (idx, resolution) in &parsed {
+            let pair = &diff.needs_review[*idx];
+            match *resolution {
+                "keep-main" => {
+                    // Branch claim is simply not inserted — remove from review queue.
+                    remove_ids.insert(pair.branch_claim_id.clone());
+                }
+                "keep-branch" => {
+                    // Reconstruct the full Claim from the branch graph and promote to new_claims.
+                    let branch_claim_id = pair.branch_claim_id.clone();
+                    let main_claim_id   = pair.main_claim_id.clone();
+                    match branch_graph.get_claim_by_id(&branch_claim_id)? {
+                        Some(claim) => {
+                            let entity_map = branch_graph.get_entity_names_for_claims(
+                                &[branch_claim_id.as_str()]
+                            )?;
+                            let entity_context = entity_map
+                                .get(branch_claim_id.as_str())
+                                .cloned()
+                                .unwrap_or_default();
+                            diff.new_claims.push(DiffClaim {
+                                claim,
+                                entity_context,
+                                diff_status: DiffStatus::Added,
+                            });
+                            diff.auto_resolved.push(AutoResolution {
+                                main_claim_id: main_claim_id.clone(),
+                                branch_claim_id: branch_claim_id.clone(),
+                                winner: branch_claim_id.clone(),
+                                confidence_delta: 0.0,
+                                reason: "Manual resolution: keep-branch".to_string(),
+                            });
+                        }
+                        None => {
+                            anyhow::bail!(
+                                "branch claim '{}' not found in branch graph — cannot apply --resolve {}=keep-branch",
+                                branch_claim_id, idx
+                            );
+                        }
+                    }
+                    remove_ids.insert(pair.branch_claim_id.clone());
+                }
+                _ => unreachable!("validated above"),
+            }
+        }
+
+        // Remove resolved items from needs_review.
+        diff.needs_review.retain(|p| !remove_ids.contains(&p.branch_claim_id));
+
+        // Re-evaluate merge_allowed now that some contradictions may have been resolved.
+        // Drop any blocking reason that referenced contradictions if needs_review is now empty.
+        if diff.needs_review.is_empty() {
+            diff.blocking_reasons.retain(|r| !r.contains("contradiction"));
+        }
+        if !force {
+            diff.merge_allowed = diff.blocking_reasons.is_empty();
+        }
+    }
+
     execute_merge(
         root,
         branch,
@@ -318,6 +409,12 @@ pub async fn handle_merge(
     println!("    {} new claims", diff.new_claims.len());
     println!("    {} new entities", diff.new_entities.len());
     println!("    {} auto-resolved contradictions", diff.auto_resolved.len());
+    if !diff.needs_review.is_empty() {
+        println!(
+            "    {} contradiction(s) remain unresolved (use --resolve to address)",
+            diff.needs_review.len()
+        );
+    }
     Ok(())
 }
 

@@ -24,7 +24,7 @@ pub async fn execute_merge(
     branch_name: &str,
     diff: &KnowledgeDiff,
     merged_by: MergedBy,
-    _propagate_deletions: bool,
+    propagate_deletions: bool,
 ) -> Result<()> {
     if !diff.merge_allowed {
         return Err(Error::MergeBlocked(diff.blocking_reasons.join("; ")));
@@ -52,6 +52,36 @@ pub async fn execute_merge(
     }
 
     let main_graph = GraphStore::init(&main_data_dir.join("graph"))?;
+
+    // Copy source records for all new claims from the branch graph.
+    // Claims carry a source_id foreign key — without the corresponding source row
+    // in main, health checks will report them as orphaned claims.
+    let branch_data_dir = resolve_data_dir(root_path, Some(branch_name));
+    let branch_graph = GraphStore::init(&branch_data_dir.join("graph"))?;
+
+    let mut copied_source_ids = std::collections::HashSet::new();
+    for diff_claim in &diff.new_claims {
+        let source_id = diff_claim.claim.source.to_string();
+        if copied_source_ids.contains(&source_id) {
+            continue;
+        }
+        match branch_graph.get_source_by_id(&source_id) {
+            Ok(Some(source)) => {
+                // Only insert if not already present in main (idempotent).
+                if main_graph.find_sources_by_uri(&source.uri)?.is_empty() {
+                    tracing::debug!("merge: copying source '{}' from branch to main", source.uri);
+                    main_graph.insert_source(&source)?;
+                }
+                copied_source_ids.insert(source_id);
+            }
+            Ok(None) => {
+                tracing::warn!("merge: source '{}' not found in branch graph — claim will be orphaned", source_id);
+            }
+            Err(e) => {
+                tracing::warn!("merge: failed to look up source '{}' in branch graph: {}", source_id, e);
+            }
+        }
+    }
 
     // Insert new claims
     for diff_claim in &diff.new_claims {
@@ -89,6 +119,36 @@ pub async fn execute_merge(
         let to_id = main_graph.find_entity_id_by_name(&diff_relation.to_name)?;
         if let (Some(from), Some(to)) = (from_id, to_id) {
             main_graph.link_entities(&from, &to, &diff_relation.relation_type, diff_relation.strength)?;
+        }
+    }
+
+    // Propagate deletions: sources present in main but absent in branch were
+    // deleted on the branch — remove them (and all derived claims) from main.
+    if propagate_deletions {
+        use std::collections::HashSet;
+        let branch_uris: HashSet<String> = branch_graph
+            .get_all_sources()?
+            .into_iter()
+            .map(|(_, uri, _)| uri)
+            .collect();
+        let main_sources = main_graph.get_all_sources()?;
+        for (_id, uri, source_type) in main_sources {
+            // Only propagate deletions for file-based sources; skip Git/URL sources
+            // that the branch may simply never have compiled.
+            let is_file_source = matches!(
+                source_type.as_str(),
+                "File" | "Document" | "Markdown" | "Code"
+            );
+            if is_file_source && !branch_uris.contains(&uri) {
+                let removed = main_graph.remove_source_by_uri(&uri)?;
+                if removed > 0 {
+                    tracing::info!(
+                        "merge(propagate-deletions): removed source '{}' (deleted on branch '{}')",
+                        uri,
+                        branch_name
+                    );
+                }
+            }
         }
     }
 

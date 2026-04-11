@@ -19,6 +19,8 @@ pub struct Extractor {
     llm: SharedLlm,
     concurrency: usize,
     min_confidence: f64,
+    /// Approximate max tokens per chunk sent to the LLM (chars / 4 approximation).
+    max_chunk_tokens: usize,
     cache: Option<crate::cache::ExtractionCache>,
 }
 
@@ -53,6 +55,7 @@ impl Extractor {
             llm: Arc::new(llm),
             concurrency: config.llm.max_concurrent_requests,
             min_confidence: config.extraction.min_confidence,
+            max_chunk_tokens: config.extraction.max_chunk_tokens,
             cache: None,
         })
     }
@@ -80,11 +83,11 @@ impl Extractor {
     ) -> Result<ExtractionOutput> {
         let semaphore = Arc::new(Semaphore::new(self.concurrency));
         let min_confidence = self.min_confidence;
+        let max_chunk_tokens = self.max_chunk_tokens;
 
         let mut output = ExtractionOutput::default();
         let documents_len = documents.len();
 
-        // Separate cache hits (processed immediately) from misses (spawned as LLM tasks).
         let mut handles = Vec::new();
 
         for doc in documents {
@@ -92,7 +95,7 @@ impl Extractor {
                 let content = chunk.content.clone();
                 let source_id = doc.source_id;
 
-                // Check cache first.
+                // Check cache first (keyed on original content before any splitting).
                 if let Some(ref cache) = self.cache {
                     if let Some(cached_result) = cache.get(&content) {
                         tracing::debug!("extraction cache hit for chunk in {}", doc.uri);
@@ -109,28 +112,43 @@ impl Extractor {
                     }
                 }
 
-                // Cache miss — spawn LLM task.
-                let llm = Arc::clone(&self.llm);
-                let sem = Arc::clone(&semaphore);
-                let uri = doc.uri.clone();
-                let context = prompts::build_context(
-                    &doc.uri,
-                    chunk.language.as_deref(),
-                    chunk.heading.as_deref(),
-                );
+                // Pre-flight: split oversized chunks before sending to LLM.
+                // Use chars/4 as a conservative token approximation.
+                let sub_chunks = split_to_token_budget(&content, max_chunk_tokens);
+                let was_split = sub_chunks.len() > 1;
+                if was_split {
+                    tracing::debug!(
+                        "chunk in {} split into {} sub-chunks (estimated {} tokens > limit {})",
+                        doc.uri,
+                        sub_chunks.len(),
+                        content.len() / 4,
+                        max_chunk_tokens
+                    );
+                }
 
-                let handle = tokio::spawn(async move {
-                    let _permit = sem.acquire().await.ok()?;
-                    match llm.extract(&content, &context).await {
-                        Ok(result) => Some((source_id, uri, content, result)),
-                        Err(e) => {
-                            tracing::warn!("extraction failed for chunk in {uri}: {e}");
-                            None
+                for sub_content in sub_chunks {
+                    let llm = Arc::clone(&self.llm);
+                    let sem = Arc::clone(&semaphore);
+                    let uri = doc.uri.clone();
+                    let context = prompts::build_context(
+                        &doc.uri,
+                        chunk.language.as_deref(),
+                        chunk.heading.as_deref(),
+                    );
+
+                    let handle = tokio::spawn(async move {
+                        let _permit = sem.acquire().await.ok()?;
+                        match extract_with_split(llm, sub_content.clone(), context, 0).await {
+                            Ok(result) => Some((source_id, uri, sub_content, result)),
+                            Err(e) => {
+                                tracing::warn!("extraction failed for chunk in {uri}: {e}");
+                                None
+                            }
                         }
-                    }
-                });
+                    });
 
-                handles.push(handle);
+                    handles.push(handle);
+                }
             }
         }
 
@@ -224,6 +242,111 @@ impl Extractor {
     }
 }
 
+/// Split content into sub-chunks that stay within the token budget.
+/// Splits at line boundaries to preserve semantic integrity.
+fn split_to_token_budget(content: &str, max_tokens: usize) -> Vec<String> {
+    // chars/4 is a conservative token approximation that works across all tokenizers.
+    let max_chars = max_tokens * 4;
+
+    if content.len() <= max_chars {
+        return vec![content.to_string()];
+    }
+
+    let lines: Vec<&str> = content.lines().collect();
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+
+    for line in lines {
+        // If adding this line would exceed budget, flush current and start new chunk.
+        if !current.is_empty() && current.len() + line.len() + 1 > max_chars {
+            chunks.push(current.trim().to_string());
+            current = String::new();
+        }
+        if !current.is_empty() {
+            current.push('\n');
+        }
+        current.push_str(line);
+    }
+
+    if !current.trim().is_empty() {
+        chunks.push(current.trim().to_string());
+    }
+
+    if chunks.is_empty() {
+        vec![content.to_string()]
+    } else {
+        chunks
+    }
+}
+
+/// Recursively extract from content, splitting at line boundaries if truncated.
+/// Depth limit of 3 prevents infinite recursion on pathological inputs.
+fn extract_with_split(
+    llm: SharedLlm,
+    content: String,
+    context: String,
+    depth: u32,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ExtractionResult>> + Send>> {
+    Box::pin(async move {
+        match llm.extract(&content, &context).await {
+            Ok(result) => Ok(result),
+
+            Err(thinkingroot_core::Error::TruncatedOutput { ref provider, ref model })
+                if depth < 3 =>
+            {
+                let lines: Vec<&str> = content.lines().collect();
+                if lines.len() < 2 {
+                    tracing::warn!(
+                        "chunk from {provider}/{model} cannot be split further — skipping"
+                    );
+                    return Ok(ExtractionResult {
+                        claims: vec![],
+                        entities: vec![],
+                        relations: vec![],
+                    });
+                }
+
+                let mid = lines.len() / 2;
+                let first_half = lines[..mid].join("\n");
+                let second_half = lines[mid..].join("\n");
+
+                tracing::info!(
+                    "output truncated by {provider}/{model}, splitting chunk at line {mid} (depth={depth})"
+                );
+
+                let llm1 = Arc::clone(&llm);
+                let llm2 = Arc::clone(&llm);
+                let ctx1 = context.clone();
+                let ctx2 = context.clone();
+
+                let (r1, r2) = tokio::try_join!(
+                    extract_with_split(llm1, first_half, ctx1, depth + 1),
+                    extract_with_split(llm2, second_half, ctx2, depth + 1),
+                )?;
+
+                Ok(ExtractionResult {
+                    claims: r1.claims.into_iter().chain(r2.claims).collect(),
+                    entities: r1.entities.into_iter().chain(r2.entities).collect(),
+                    relations: r1.relations.into_iter().chain(r2.relations).collect(),
+                })
+            }
+
+            Err(thinkingroot_core::Error::TruncatedOutput { provider, model }) => {
+                tracing::error!(
+                    "chunk still truncated after max splits for {provider}/{model} — skipping"
+                );
+                Ok(ExtractionResult {
+                    claims: vec![],
+                    entities: vec![],
+                    relations: vec![],
+                })
+            }
+
+            Err(e) => Err(e),
+        }
+    })
+}
+
 impl ExtractionOutput {
     fn merge(&mut self, other: ExtractionOutput) {
         self.claims.extend(other.claims);
@@ -287,5 +410,44 @@ fn parse_relation_type(s: &str) -> RelationType {
         "configured_by" => RelationType::ConfiguredBy,
         "tested_by" => RelationType::TestedBy,
         _ => RelationType::RelatedTo,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_to_token_budget_no_split_needed() {
+        let content = "hello world\nfoo bar";
+        let chunks = split_to_token_budget(content, 10000);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], content);
+    }
+
+    #[test]
+    fn split_to_token_budget_splits_at_line_boundary() {
+        // 4 chars per token, budget of 5 tokens = 20 chars max.
+        let line_a = "AAAAAAAAAA"; // 10 chars
+        let line_b = "BBBBBBBBBB"; // 10 chars
+        let line_c = "CCCCCCCCCC"; // 10 chars
+        let content = format!("{line_a}\n{line_b}\n{line_c}");
+        let chunks = split_to_token_budget(&content, 5); // 20 chars budget
+        // line_a + line_b = 21 chars (with \n), so they can't both fit.
+        assert!(chunks.len() >= 2);
+        // Every line must appear in some chunk.
+        let rejoined = chunks.join("\n");
+        assert!(rejoined.contains(line_a));
+        assert!(rejoined.contains(line_b));
+        assert!(rejoined.contains(line_c));
+    }
+
+    #[test]
+    fn split_to_token_budget_single_large_line_kept_intact() {
+        // A single line larger than budget is kept as-is (can't split mid-line).
+        let big_line = "X".repeat(1000);
+        let chunks = split_to_token_budget(&big_line, 10); // 40 chars budget
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], big_line);
     }
 }

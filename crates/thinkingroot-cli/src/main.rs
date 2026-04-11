@@ -192,6 +192,10 @@ enum Commands {
         /// Restore main to its state before this branch was merged
         #[arg(long)]
         rollback: bool,
+        /// Manually resolve a contradiction (format: <index>=keep-main|keep-branch).
+        /// Index refers to the numbered list shown by `root diff`. Repeatable.
+        #[arg(long = "resolve", value_name = "N=RESOLUTION")]
+        resolutions: Vec<String>,
     },
     /// Show current branch and workspace status
     Status {
@@ -312,11 +316,11 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Diff { branch, path }) => {
             branch_cmd::handle_diff(&path, &branch).await?;
         }
-        Some(Commands::Merge { branch, path, force, propagate_deletions, rollback }) => {
+        Some(Commands::Merge { branch, path, force, propagate_deletions, rollback, resolutions }) => {
             if rollback {
                 branch_cmd::handle_rollback(&path, &branch)?;
             } else {
-                branch_cmd::handle_merge(&path, &branch, force, propagate_deletions).await?;
+                branch_cmd::handle_merge(&path, &branch, force, propagate_deletions, &resolutions).await?;
             }
         }
         Some(Commands::Status { path }) => {

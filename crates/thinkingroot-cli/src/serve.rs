@@ -189,7 +189,13 @@ pub async fn run_serve(
     println!();
 
     // Build and start server.
-    let state = AppState::new(engine, api_key);
+    // Pass workspace_root for branch API endpoints when exactly one workspace is mounted.
+    let workspace_root = if resolved_paths.len() == 1 {
+        Some(resolved_paths[0].1.clone())
+    } else {
+        None
+    };
+    let state = AppState::new_with_root(engine, api_key, workspace_root);
 
     let router = build_router_opts(state, !no_rest, !no_mcp);
     let addr = format!("{}:{}", host, port);

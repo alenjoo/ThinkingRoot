@@ -209,7 +209,7 @@ pub struct ExtractionConfig {
 impl Default for ExtractionConfig {
     fn default() -> Self {
         Self {
-            max_chunk_tokens: 4000,
+            max_chunk_tokens: 2000,
             min_confidence: 0.5,
             extract_relations: true,
             max_retries: 3,
@@ -420,7 +420,7 @@ request_timeout_secs = 60
     fn default_config_is_valid() {
         let config = Config::default();
         assert_eq!(config.llm.default_provider, "bedrock");
-        assert_eq!(config.extraction.max_chunk_tokens, 4000);
+        assert_eq!(config.extraction.max_chunk_tokens, 2000);
         assert!(config.parsers.respect_gitignore);
     }
 
