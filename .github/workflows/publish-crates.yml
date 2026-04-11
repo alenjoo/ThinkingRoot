@@ -1,0 +1,59 @@
+name: Publish to crates.io
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    name: Publish crates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Publish in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -e
+
+          publish() {
+            echo "==> Publishing $1"
+            cargo publish -p "$1" --no-default-features
+            # crates.io needs ~20s to index before dependents can resolve the dep
+            echo "Waiting for crates.io to index $1..."
+            sleep 25
+          }
+
+          # Tier 1: no internal deps
+          publish thinkingroot-core
+
+          # Tier 2: depend only on core
+          publish thinkingroot-graph
+          publish thinkingroot-parse
+
+          # Tier 3: depend on core + graph/parse
+          publish thinkingroot-extract
+          publish thinkingroot-link
+
+          # Tier 4: depend on tiers 1-3
+          publish thinkingroot-compile
+          publish thinkingroot-verify
+          publish thinkingroot-safety
+
+          # Tier 5: depends on all above
+          publish thinkingroot-serve
+
+          # Tier 6: depends on serve
+          publish thinkingroot-branch
+
+          # Tier 7: CLI binary — depends on everything
+          publish thinkingroot-cli
+
+          echo "All crates published successfully."

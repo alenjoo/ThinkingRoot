@@ -37,20 +37,24 @@ edition = "2024"
 authors = ["Naveen <naveen@thinkingroot.dev>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/thinkingroot/thinkingroot"
+homepage = "https://thinkingroot.dev"
+documentation = "https://docs.thinkingroot.dev"
 rust-version = "1.85"
+keywords = ["knowledge-graph", "llm", "ai", "mcp", "rag"]
+categories = ["development-tools", "database", "parser-implementations"]
 
 [workspace.dependencies]
 # Internal crates
-thinkingroot-core = { path = "crates/thinkingroot-core" }
-thinkingroot-graph = { path = "crates/thinkingroot-graph", default-features = false }
-thinkingroot-parse = { path = "crates/thinkingroot-parse" }
-thinkingroot-extract = { path = "crates/thinkingroot-extract" }
-thinkingroot-link = { path = "crates/thinkingroot-link" }
-thinkingroot-compile = { path = "crates/thinkingroot-compile" }
-thinkingroot-verify = { path = "crates/thinkingroot-verify" }
-thinkingroot-serve = { path = "crates/thinkingroot-serve", default-features = false }
-thinkingroot-safety = { path = "crates/thinkingroot-safety" }
-thinkingroot-branch = { path = "crates/thinkingroot-branch" }
+thinkingroot-core    = { path = "crates/thinkingroot-core",    version = "0.1.0" }
+thinkingroot-graph   = { path = "crates/thinkingroot-graph",   version = "0.1.0", default-features = false }
+thinkingroot-parse   = { path = "crates/thinkingroot-parse",   version = "0.1.0" }
+thinkingroot-extract = { path = "crates/thinkingroot-extract", version = "0.1.0" }
+thinkingroot-link    = { path = "crates/thinkingroot-link",    version = "0.1.0" }
+thinkingroot-compile = { path = "crates/thinkingroot-compile", version = "0.1.0" }
+thinkingroot-verify  = { path = "crates/thinkingroot-verify",  version = "0.1.0" }
+thinkingroot-serve   = { path = "crates/thinkingroot-serve",   version = "0.1.0", default-features = false }
+thinkingroot-safety  = { path = "crates/thinkingroot-safety",  version = "0.1.0" }
+thinkingroot-branch  = { path = "crates/thinkingroot-branch",  version = "0.1.0", default-features = false }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

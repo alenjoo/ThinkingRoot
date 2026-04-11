@@ -4,8 +4,13 @@ description = "Stage 6: REST API and MCP server for ThinkingRoot"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
-rust-version.workspace = true
+license.workspace        = true
+repository.workspace    = true
+homepage.workspace      = true
+documentation.workspace = true
+keywords.workspace      = true
+categories.workspace    = true
+rust-version.workspace  = true
 
 [features]
 ## Enable vector/semantic search. Disable with --no-default-features to build

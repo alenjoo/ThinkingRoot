@@ -1,5 +1,6 @@
 [package]
 name = "thinkingroot-python"
+publish = false  # cdylib — distributed via PyPI via maturin, not crates.io
 version = "0.1.0"
 edition = "2024"
 
