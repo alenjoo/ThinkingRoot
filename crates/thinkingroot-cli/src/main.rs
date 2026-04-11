@@ -9,6 +9,7 @@ use tracing_subscriber::EnvFilter;
 mod branch_cmd;
 mod mcp_config;
 mod pipeline;
+mod progress;
 mod serve;
 mod setup;
 mod watch;
