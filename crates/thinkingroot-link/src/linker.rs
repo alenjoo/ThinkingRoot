@@ -195,6 +195,17 @@ impl<'a> Linker<'a> {
             ("yes", "no"),
             ("deprecated", "active"),
             ("removed", "added"),
+            // New patterns:
+            ("migrated from", "uses"),
+            ("replaced by", "depends on"),
+            ("optional", "required"),
+            ("synchronous", "asynchronous"),
+            ("mutable", "immutable"),
+            ("public", "private"),
+            ("internal", "external"),
+            ("production", "development"),
+            ("legacy", "current"),
+            ("before", "after"),
         ];
 
         for group in entity_claims.values() {
@@ -209,6 +220,9 @@ impl<'a> Linker<'a> {
                         (a_lower.contains(pos) && b_lower.contains(neg))
                             || (a_lower.contains(neg) && b_lower.contains(pos))
                     });
+
+                    let conf_a = a.confidence.value();
+                    let conf_b = b.confidence.value();
 
                     if is_contradiction {
                         let contradiction =
@@ -226,8 +240,6 @@ impl<'a> Linker<'a> {
 
                         // Auto-supersession: if confidence difference > 0.15,
                         // supersede the lower-confidence claim.
-                        let conf_a = a.confidence.value();
-                        let conf_b = b.confidence.value();
                         if (conf_a - conf_b).abs() > 0.15 {
                             if conf_a > conf_b {
                                 self.graph
@@ -239,6 +251,53 @@ impl<'a> Linker<'a> {
                         }
 
                         count += 1;
+                    }
+
+                    // Second pass: claims with high word overlap but different key terms
+                    // may indicate contradictions the keyword pairs missed.
+                    // Example: "uses PostgreSQL" vs "uses MySQL" — same structure, different DB.
+                    if !is_contradiction {
+                        let a_words: std::collections::HashSet<&str> =
+                            a_lower.split_whitespace().collect();
+                        let b_words: std::collections::HashSet<&str> =
+                            b_lower.split_whitespace().collect();
+
+                        let intersection = a_words.intersection(&b_words).count();
+                        let union = a_words.union(&b_words).count();
+                        let jaccard = if union > 0 {
+                            intersection as f64 / union as f64
+                        } else {
+                            0.0
+                        };
+
+                        // High overlap (same structure) but not identical (different values)
+                        // suggests a potential contradiction.
+                        if jaccard > 0.6 && jaccard < 0.95 && a.claim_type == b.claim_type {
+                            let contradiction =
+                                Contradiction::new(a.id, b.id).with_explanation(format!(
+                                    "Potential conflict (Jaccard={jaccard:.2}): \"{}\" vs \"{}\"",
+                                    truncate(&a.statement, 80),
+                                    truncate(&b.statement, 80),
+                                ));
+                            self.graph.insert_contradiction(
+                                &contradiction.id.to_string(),
+                                &a.id.to_string(),
+                                &b.id.to_string(),
+                                contradiction.explanation.as_deref().unwrap_or(""),
+                            )?;
+
+                            if (conf_a - conf_b).abs() > 0.15 {
+                                if conf_a > conf_b {
+                                    self.graph
+                                        .supersede_claim(&b.id.to_string(), &a.id.to_string())?;
+                                } else {
+                                    self.graph
+                                        .supersede_claim(&a.id.to_string(), &b.id.to_string())?;
+                                }
+                            }
+
+                            count += 1;
+                        }
                     }
                 }
             }
