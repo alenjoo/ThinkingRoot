@@ -159,6 +159,14 @@ mod inner {
             self.index.is_empty()
         }
 
+        /// Embed texts and return raw embedding vectors.
+        /// Used by the grounding system's semantic judge.
+        pub fn embed_texts(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+            self.model
+                .embed(texts.to_vec(), None)
+                .map_err(|e| Error::GraphStorage(format!("embedding failed: {e}")))
+        }
+
         fn load_index(path: &Path) -> HashMap<String, (Vec<f32>, String)> {
             let bytes = match std::fs::read(path) {
                 Ok(b) => b,
@@ -238,6 +246,10 @@ mod inner {
 
         pub fn is_empty(&self) -> bool {
             true
+        }
+
+        pub fn embed_texts(&self, _texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+            Ok(vec![])
         }
     }
 }
