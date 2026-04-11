@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use thinkingroot_core::Result;
 use thinkingroot_core::types::*;
@@ -7,12 +8,17 @@ use thinkingroot_graph::graph::GraphStore;
 
 use crate::resolution;
 
+/// Callback fired after each entity is resolved (created or merged).
+/// Arguments: (done, total)
+pub type EntityProgressFn = Arc<dyn Fn(usize, usize) + Send + Sync>;
+
 /// The Linker takes extraction output and builds the knowledge graph:
 /// - Resolves duplicate entities
 /// - Detects contradictions
 /// - Writes everything to the graph store
 pub struct Linker<'a> {
     graph: &'a GraphStore,
+    progress: Option<EntityProgressFn>,
 }
 
 /// Output of the linking stage.
@@ -32,7 +38,14 @@ pub struct LinkOutput {
 
 impl<'a> Linker<'a> {
     pub fn new(graph: &'a GraphStore) -> Self {
-        Self { graph }
+        Self { graph, progress: None }
+    }
+
+    /// Attach a progress callback. Called once per entity resolved.
+    /// Arguments: (done, total)
+    pub fn with_progress(mut self, f: EntityProgressFn) -> Self {
+        self.progress = Some(f);
+        self
     }
 
     /// Link extracted knowledge into the graph.
@@ -42,11 +55,12 @@ impl<'a> Linker<'a> {
         // Phase 1: Entity resolution.
         let mut resolved_entities = self.graph.get_entities_with_aliases()?;
         let mut entity_id_map: HashMap<EntityId, EntityId> = HashMap::new();
+        let total_entities = extraction.entities.len();
+        let mut entity_done: usize = 0;
 
         for new_entity in extraction.entities {
             match resolution::resolve_entity(&new_entity, &resolved_entities) {
                 Some(existing_id) => {
-                    // Merge into existing.
                     if let Some(existing) =
                         resolved_entities.iter_mut().find(|e| e.id == existing_id)
                     {
@@ -57,13 +71,16 @@ impl<'a> Linker<'a> {
                     }
                 }
                 None => {
-                    // New entity.
                     let new_id = new_entity.id;
                     entity_id_map.insert(new_id, new_id);
                     output.affected_entity_ids.push(new_id.to_string());
                     resolved_entities.push(new_entity);
                     output.entities_created += 1;
                 }
+            }
+            entity_done += 1;
+            if let Some(ref pf) = self.progress {
+                pf(entity_done, total_entities);
             }
         }
 
