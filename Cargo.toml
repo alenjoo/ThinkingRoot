@@ -11,6 +11,7 @@ members = [
     "crates/thinkingroot-serve",
     "crates/thinkingroot-safety",
     "crates/thinkingroot-branch",
+    "crates/thinkingroot-ground",
     "crates/thinkingroot-cli",
     "thinkingroot-python",
 ]
@@ -28,6 +29,7 @@ default-members = [
     "crates/thinkingroot-serve",
     "crates/thinkingroot-safety",
     "crates/thinkingroot-branch",
+    "crates/thinkingroot-ground",
     "crates/thinkingroot-cli",
 ]
 
@@ -55,6 +57,7 @@ thinkingroot-verify  = { path = "crates/thinkingroot-verify",  version = "0.2.0"
 thinkingroot-serve   = { path = "crates/thinkingroot-serve",   version = "0.2.0", default-features = false }
 thinkingroot-safety  = { path = "crates/thinkingroot-safety",  version = "0.2.0" }
 thinkingroot-branch  = { path = "crates/thinkingroot-branch",  version = "0.2.0", default-features = false }
+thinkingroot-ground  = { path = "crates/thinkingroot-ground", version = "0.2.0", default-features = false }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -120,6 +123,7 @@ ignore = "0.4"
 notify = "8"
 notify-debouncer-mini = "0.6"
 strsim = "0.11"
+unicode-segmentation = "1.12"
 ordered-float = { version = "5", features = ["serde"] }
 tokio-stream = "0.1"
 

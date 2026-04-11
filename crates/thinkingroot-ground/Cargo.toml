@@ -1,0 +1,31 @@
+[package]
+name = "thinkingroot-ground"
+description = "Write-time hallucination prevention: 3-judge grounding tribunal"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+## Enable Judge 3 (embedding cosine similarity) via fastembed.
+## Without this, only Judges 1+2 (pure string ops) are active.
+vector = ["dep:thinkingroot-graph"]
+
+[dependencies]
+thinkingroot-core = { workspace = true }
+thinkingroot-extract = { workspace = true }
+unicode-segmentation = { workspace = true }
+tracing = { workspace = true }
+
+# Optional: Judge 3 needs fastembed via graph crate for embeddings.
+thinkingroot-graph = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
