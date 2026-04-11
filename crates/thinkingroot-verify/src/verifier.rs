@@ -259,6 +259,8 @@ mod tests {
             extracted_by: PipelineVersion::current(),
             superseded_by: None,
             created_at: chrono::Utc::now(),
+            grounding_score: None,
+            grounding_method: None,
         };
         graph.insert_claim(&claim).unwrap();
 

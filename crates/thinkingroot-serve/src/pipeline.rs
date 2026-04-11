@@ -159,6 +159,31 @@ pub async fn run_pipeline(
         extraction = raw;
     }
 
+    // ─── Phase 2b: Ground extraction output ─────────────────────────────
+    // The Grounding Tribunal verifies each claim against its source text.
+    // Claims that fail grounding (score < 0.25) are rejected before they
+    // touch the database.
+    let extraction = if !extraction.claims.is_empty() {
+        let grounder = thinkingroot_ground::Grounder::new(
+            thinkingroot_ground::GroundingConfig::default(),
+        );
+        let pre_count = extraction.claims.len();
+        let mut grounded = grounder.ground(extraction);
+        thinkingroot_ground::dedup::dedup_claims(&mut grounded.claims);
+        let post_count = grounded.claims.len();
+        if pre_count != post_count {
+            tracing::info!(
+                "grounding: {} → {} claims ({} rejected/deduped)",
+                pre_count,
+                post_count,
+                pre_count - post_count,
+            );
+        }
+        grounded
+    } else {
+        extraction
+    };
+
     // ─── Phase 3: Fingerprint check ────────────────────────────────────
     // For each potentially-changed doc, compute a fingerprint of its extracted
     // claims. If identical to stored fingerprint, skip this source entirely.
