@@ -100,6 +100,14 @@ impl Verifier {
             ));
         }
 
+        // Grounding: count claims with low grounding scores.
+        let low_grounding = graph.count_low_grounding_claims(0.5)?;
+        if low_grounding > 0 {
+            warnings.push(format!(
+                "{low_grounding} claims have low grounding scores (< 0.5) — review recommended."
+            ));
+        }
+
         let health_score = HealthScore::compute(freshness, consistency, coverage, provenance);
 
         tracing::info!(
@@ -279,6 +287,39 @@ mod tests {
 
         let result = default_verifier().verify(&graph).unwrap();
         assert_eq!(result.orphaned_claims, 0);
+    }
+
+    // ── Grounding ────────────────────────────────────────────────────────
+
+    #[test]
+    fn low_grounding_claims_produce_warning() {
+        let (_dir, graph) = make_graph();
+        let source = make_source("test://grounding.md");
+        graph.insert_source(&source).unwrap();
+
+        // Insert a claim with low grounding score.
+        use thinkingroot_core::types::GroundingMethod;
+        let claim = make_claim("Weakly grounded claim.", &source)
+            .with_grounding(0.3, GroundingMethod::Lexical);
+        graph.insert_claim(&claim).unwrap();
+
+        let result = default_verifier().verify(&graph).unwrap();
+        assert!(result.warnings.iter().any(|w| w.contains("low grounding")));
+    }
+
+    #[test]
+    fn well_grounded_claims_no_warning() {
+        let (_dir, graph) = make_graph();
+        let source = make_source("test://grounding2.md");
+        graph.insert_source(&source).unwrap();
+
+        use thinkingroot_core::types::GroundingMethod;
+        let claim = make_claim("Well grounded claim.", &source)
+            .with_grounding(0.9, GroundingMethod::Combined);
+        graph.insert_claim(&claim).unwrap();
+
+        let result = default_verifier().verify(&graph).unwrap();
+        assert!(!result.warnings.iter().any(|w| w.contains("low grounding")));
     }
 
     // ── Overall score formula ────────────────────────────────────────────
