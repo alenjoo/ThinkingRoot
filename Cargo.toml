@@ -32,7 +32,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["Naveen <naveen@thinkingroot.dev>"]
 license = "MIT OR Apache-2.0"
@@ -45,16 +45,16 @@ categories = ["development-tools", "database", "parser-implementations"]
 
 [workspace.dependencies]
 # Internal crates
-thinkingroot-core    = { path = "crates/thinkingroot-core",    version = "0.1.0" }
-thinkingroot-graph   = { path = "crates/thinkingroot-graph",   version = "0.1.0", default-features = false }
-thinkingroot-parse   = { path = "crates/thinkingroot-parse",   version = "0.1.0" }
-thinkingroot-extract = { path = "crates/thinkingroot-extract", version = "0.1.0" }
-thinkingroot-link    = { path = "crates/thinkingroot-link",    version = "0.1.0" }
-thinkingroot-compile = { path = "crates/thinkingroot-compile", version = "0.1.0" }
-thinkingroot-verify  = { path = "crates/thinkingroot-verify",  version = "0.1.0" }
-thinkingroot-serve   = { path = "crates/thinkingroot-serve",   version = "0.1.0", default-features = false }
-thinkingroot-safety  = { path = "crates/thinkingroot-safety",  version = "0.1.0" }
-thinkingroot-branch  = { path = "crates/thinkingroot-branch",  version = "0.1.0", default-features = false }
+thinkingroot-core    = { path = "crates/thinkingroot-core",    version = "0.2.0" }
+thinkingroot-graph   = { path = "crates/thinkingroot-graph",   version = "0.2.0", default-features = false }
+thinkingroot-parse   = { path = "crates/thinkingroot-parse",   version = "0.2.0" }
+thinkingroot-extract = { path = "crates/thinkingroot-extract", version = "0.2.0" }
+thinkingroot-link    = { path = "crates/thinkingroot-link",    version = "0.2.0" }
+thinkingroot-compile = { path = "crates/thinkingroot-compile", version = "0.2.0" }
+thinkingroot-verify  = { path = "crates/thinkingroot-verify",  version = "0.2.0" }
+thinkingroot-serve   = { path = "crates/thinkingroot-serve",   version = "0.2.0", default-features = false }
+thinkingroot-safety  = { path = "crates/thinkingroot-safety",  version = "0.2.0" }
+thinkingroot-branch  = { path = "crates/thinkingroot-branch",  version = "0.2.0", default-features = false }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
