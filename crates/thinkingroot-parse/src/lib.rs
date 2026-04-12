@@ -1,5 +1,6 @@
 pub mod code;
 pub mod git;
+pub mod manifest;
 pub mod markdown;
 pub mod pdf;
 pub mod walker;
@@ -28,6 +29,19 @@ pub fn parse_file(path: &Path) -> Result<DocumentIR> {
         "ts" | "tsx" => code::parse(path, "typescript"),
         "go" => code::parse(path, "go"),
         "pdf" => pdf::parse(path),
+        // Manifest files get structured dependency parsing.
+        "toml" if path.file_name().map_or(false, |n| n == "Cargo.toml" || n == "pyproject.toml") => {
+            manifest::parse(path)
+        }
+        "json" if path.file_name().map_or(false, |n| n == "package.json") => {
+            manifest::parse(path)
+        }
+        "mod" if path.file_name().map_or(false, |n| n == "go.mod") => {
+            manifest::parse(path)
+        }
+        "txt" if path.file_name().map_or(false, |n| n == "requirements.txt") => {
+            manifest::parse(path)
+        }
         // Treat unknown text files as plain markdown for basic extraction.
         "txt" | "toml" | "yaml" | "yml" | "json" | "cfg" | "ini" | "env" => {
             markdown::parse_as_text(path)
