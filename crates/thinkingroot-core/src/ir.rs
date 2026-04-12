@@ -139,6 +139,7 @@ pub struct ChunkMetadata {
     /// For TypeDef (struct_item): the non-primitive field types.
     /// Each entry is the base type name (generics stripped).
     pub field_types: Vec<String>,
+    // Gap 1: Code structure (function/type/import metadata)
     // Gap 2: Code call graph
     /// Functions/methods called within this function body (simple names, deduplicated).
     pub calls_functions: Vec<String>,
@@ -149,7 +150,7 @@ pub struct ChunkMetadata {
     pub links: Vec<String>,
     // Gap 4: Git history
     /// Commit author name (git commits only).
-    pub author: Option<String>,
+    pub commit_author: Option<String>,
     /// File paths changed in this commit (from diff --stat output).
     pub changed_files: Vec<String>,
 }
@@ -164,7 +165,7 @@ mod tests {
         assert!(m.calls_functions.is_empty());
         assert!(m.heading_level.is_none());
         assert!(m.links.is_empty());
-        assert!(m.author.is_none());
+        assert!(m.commit_author.is_none());
         assert!(m.changed_files.is_empty());
     }
 
