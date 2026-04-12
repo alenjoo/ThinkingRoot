@@ -185,23 +185,29 @@ pub async fn run_pipeline(
         );
     }
 
-    // ─── Phase 2b: Cascade Grounding ─────────────────────────────────
+    // ─── Phase 2b: Cascade Grounding ─────────────────────────────────────────────────
     // Structural claims (from AST) are auto-grounded at 0.99 — skip tribunal.
-    // LLM claims run the full 4-judge tribunal (unchanged behavior).
+    // LLM claims run the full 4-judge grounding tribunal (unchanged behavior).
+    //
+    // IMPORTANT: We partition claims before passing to the grounder so that
+    // the tribunal cannot overwrite auto-grounded structural scores. The
+    // structural claims are merged back after the tribunal completes.
     //
     // NliJudge::load() uses hf-hub's sync API (reqwest::blocking) which must
     // NOT be called from within an async context — it creates a nested Tokio
     // runtime that deadlocks the worker thread. We use spawn_blocking to move
     // it onto a dedicated blocking thread.
 
-    // Step 1: Auto-ground structural claims.
-    let mut structural_count = 0usize;
-    for claim in &mut extraction.claims {
-        if claim.extraction_tier == thinkingroot_core::types::ExtractionTier::Structural {
-            claim.grounding_score = Some(0.99);
-            claim.grounding_method = Some(thinkingroot_core::types::GroundingMethod::Structural);
-            structural_count += 1;
-        }
+    // Partition: structural claims get 0.99, LLM claims go to tribunal.
+    let (llm_claims, mut structural_claims): (Vec<_>, Vec<_>) = extraction.claims
+        .into_iter()
+        .partition(|c| c.extraction_tier == thinkingroot_core::types::ExtractionTier::Llm);
+
+    // Auto-ground structural claims.
+    let structural_count = structural_claims.len();
+    for claim in &mut structural_claims {
+        claim.grounding_score = Some(0.99);
+        claim.grounding_method = Some(thinkingroot_core::types::GroundingMethod::Structural);
     }
     if structural_count > 0 {
         tracing::info!(
@@ -210,13 +216,8 @@ pub async fn run_pipeline(
         );
     }
 
-    // Step 2: Check for LLM claims that need the full tribunal.
-    let llm_claim_count = extraction.claims.iter()
-        .filter(|c| c.extraction_tier == thinkingroot_core::types::ExtractionTier::Llm)
-        .count();
-
-    if llm_claim_count > 0 {
-        // Load NLI judge for LLM claims.
+    // Run tribunal on LLM claims only.
+    let grounded_llm_claims = if !llm_claims.is_empty() {
         #[cfg(feature = "vector")]
         let mut nli_judge = {
             let data_dir_clone = data_dir.clone();
@@ -237,31 +238,39 @@ pub async fn run_pipeline(
             }
         };
 
-        let grounder = thinkingroot_ground::Grounder::new(
-            thinkingroot_ground::GroundingConfig::default(),
-        );
+        extraction.claims = llm_claims;
         let pre_count = extraction.claims.len();
-        extraction = grounder.ground(
+        let mut grounded = thinkingroot_ground::Grounder::new(
+            thinkingroot_ground::GroundingConfig::default(),
+        )
+        .ground(
             extraction,
             #[cfg(feature = "vector")]
             Some(&mut storage.vector),
             #[cfg(feature = "vector")]
             nli_judge.as_mut(),
         );
-        thinkingroot_ground::dedup::dedup_claims(&mut extraction.claims);
-        let post_count = extraction.claims.len();
+        thinkingroot_ground::dedup::dedup_claims(&mut grounded.claims);
+        let post_count = grounded.claims.len();
         if pre_count != post_count {
             tracing::info!(
-                "grounding: {} → {} claims ({} rejected/deduped)",
+                "grounding: {} → {} LLM claims ({} rejected/deduped)",
                 pre_count,
                 post_count,
                 pre_count - post_count,
             );
         }
+        grounded
     } else {
-        // All claims are structural — just dedup, skip tribunal.
-        thinkingroot_ground::dedup::dedup_claims(&mut extraction.claims);
-    }
+        // All claims are structural — rebuild extraction with empty claims vec.
+        extraction.claims = Vec::new();
+        extraction
+    };
+
+    // Merge: structural claims (0.99 grounding) + surviving LLM claims.
+    extraction = grounded_llm_claims;
+    extraction.claims.extend(structural_claims);
+    thinkingroot_ground::dedup::dedup_claims(&mut extraction.claims);
 
     // ─── Phase 3: Fingerprint check ────────────────────────────────────
     // For each potentially-changed doc, compute a fingerprint of its extracted
