@@ -187,9 +187,11 @@ fn parse_markdown_content(path: &Path, content: &str) -> Result<DocumentIR> {
                 current_start_line = line_counter + 1;
             }
             Event::Start(Tag::Link { dest_url, .. }) => {
-                let url = dest_url.to_string();
-                if !url.is_empty() && !url.starts_with('#') {
-                    current_links.push(url);
+                if !in_heading && !in_list {
+                    let url = dest_url.to_string();
+                    if !url.is_empty() && !url.starts_with('#') {
+                        current_links.push(url);
+                    }
                 }
             }
             Event::Text(text) => {
@@ -358,6 +360,34 @@ mod tests {
         assert!(
             prose.metadata.links.iter().all(|l| !l.starts_with('#')),
             "fragment-only links must not be collected"
+        );
+    }
+
+    #[test]
+    fn links_in_list_do_not_leak_to_next_prose() {
+        let content = "- Item with [link](https://list-link.com)\n\nProse after list.\n";
+        let doc = parse_markdown_content(Path::new("test.md"), content).unwrap();
+        let prose = doc.chunks.iter()
+            .find(|c| c.chunk_type == ChunkType::Prose && c.content.contains("Prose after"))
+            .expect("prose chunk must exist");
+        assert!(
+            prose.metadata.links.is_empty(),
+            "list links must not leak into next prose chunk: {:?}",
+            prose.metadata.links
+        );
+    }
+
+    #[test]
+    fn links_in_heading_do_not_leak_to_next_prose() {
+        let content = "# [Title](https://heading-link.com)\n\nProse after heading.\n";
+        let doc = parse_markdown_content(Path::new("test.md"), content).unwrap();
+        let prose = doc.chunks.iter()
+            .find(|c| c.chunk_type == ChunkType::Prose && c.content.contains("Prose after"))
+            .expect("prose chunk must exist");
+        assert!(
+            prose.metadata.links.is_empty(),
+            "heading links must not leak into next prose chunk: {:?}",
+            prose.metadata.links
         );
     }
 }
