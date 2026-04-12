@@ -555,6 +555,62 @@ impl GraphStore {
             .collect())
     }
 
+    /// Get all `(from_id, to_id, relation_type)` triples in `entity_relations`
+    /// where at least one endpoint is in `entity_ids`.
+    ///
+    /// Used by the incremental pipeline to collect cross-file triples that need
+    /// re-evaluation when a source's entities are removed or changed.
+    /// Returns deduplicated triples.
+    pub fn get_all_triples_involving_entities(
+        &self,
+        entity_ids: &[String],
+    ) -> Result<Vec<(String, String, String)>> {
+        if entity_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut seen = std::collections::HashSet::new();
+
+        for eid in entity_ids {
+            let mut params = BTreeMap::new();
+            params.insert("eid".into(), DataValue::Str(eid.clone().into()));
+
+            // Triples where this entity is the source (from_id == eid).
+            let from_result = self
+                .db
+                .run_script(
+                    "?[f, t, rel_type] := \
+                     *entity_relations{from_id: f, to_id: t, relation_type: rel_type}, \
+                     f = $eid",
+                    params.clone(),
+                    ScriptMutability::Immutable,
+                )
+                .map_err(|e| Error::GraphStorage(format!("query failed: {e}")))?;
+
+            // Triples where this entity is the target (to_id == eid).
+            let to_result = self
+                .db
+                .run_script(
+                    "?[f, t, rel_type] := \
+                     *entity_relations{from_id: f, to_id: t, relation_type: rel_type}, \
+                     t = $eid",
+                    params,
+                    ScriptMutability::Immutable,
+                )
+                .map_err(|e| Error::GraphStorage(format!("query failed: {e}")))?;
+
+            for row in from_result.rows.iter().chain(to_result.rows.iter()) {
+                seen.insert((
+                    dv_to_string(&row[0]),
+                    dv_to_string(&row[1]),
+                    dv_to_string(&row[2]),
+                ));
+            }
+        }
+
+        Ok(seen.into_iter().collect())
+    }
+
     /// Incrementally update entity_relations for specific (from, to, rel_type) triples.
     /// Removes the stale aggregated edge, then re-aggregates from source_entity_relations.
     /// If no source still contributes a triple, the aggregated edge stays deleted.
@@ -2245,6 +2301,44 @@ mod tests {
             (*strength - 0.875).abs() < 0.01,
             "expected ~0.875 from noisy-OR, got {strength}"
         );
+    }
+
+    #[test]
+    fn get_all_triples_involving_entities_returns_cross_file_edges() {
+        let store = mem_store();
+
+        let e1 = thinkingroot_core::Entity::new("Alpha", thinkingroot_core::types::EntityType::Service);
+        let e2 = thinkingroot_core::Entity::new("Beta", thinkingroot_core::types::EntityType::Service);
+        let e3 = thinkingroot_core::Entity::new("Gamma", thinkingroot_core::types::EntityType::Database);
+        store.insert_entity(&e1).unwrap();
+        store.insert_entity(&e2).unwrap();
+        store.insert_entity(&e3).unwrap();
+
+        let eid1 = e1.id.to_string();
+        let eid2 = e2.id.to_string();
+        let eid3 = e3.id.to_string();
+
+        let src_a = thinkingroot_core::Source::new("a.rs".into(), thinkingroot_core::types::SourceType::File);
+        let src_b = thinkingroot_core::Source::new("b.rs".into(), thinkingroot_core::types::SourceType::File);
+        store.insert_source(&src_a).unwrap();
+        store.insert_source(&src_b).unwrap();
+
+        store.link_entities_for_source(&src_a.id.to_string(), &eid1, &eid2, "Uses", 0.9).unwrap();
+        store.link_entities_for_source(&src_b.id.to_string(), &eid2, &eid3, "DependsOn", 0.8).unwrap();
+        store.rebuild_entity_relations().unwrap();
+
+        // Query triples involving e1.
+        let triples = store.get_all_triples_involving_entities(&[eid1.clone()]).unwrap();
+        assert_eq!(triples.len(), 1);
+        assert!(triples.iter().any(|(f, t, _)| f == &eid1 && t == &eid2));
+
+        // Query triples involving e2 (appears in BOTH triples).
+        let triples2 = store.get_all_triples_involving_entities(&[eid2.clone()]).unwrap();
+        assert_eq!(triples2.len(), 2, "e2 is in both triples (as target of first, source of second)");
+
+        // Empty input returns empty.
+        let empty = store.get_all_triples_involving_entities(&[]).unwrap();
+        assert!(empty.is_empty());
     }
 
     #[test]
