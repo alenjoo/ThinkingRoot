@@ -28,6 +28,8 @@ pub struct Extractor {
     max_chunk_tokens: usize,
     cache: Option<crate::cache::ExtractionCache>,
     progress: Option<ChunkProgressFn>,
+    /// Known entities from the existing graph, injected into LLM prompts.
+    known_entities: crate::graph_context::GraphPrimedContext,
 }
 
 /// The combined output of extraction across all documents.
@@ -43,6 +45,8 @@ pub struct ExtractionOutput {
     pub chunks_processed: usize,
     /// Chunks served from the content-addressable extraction cache (no LLM call made).
     pub cache_hits: usize,
+    /// Chunks extracted via structural (Tier 0) extraction — no LLM call made.
+    pub structural_extractions: usize,
     /// Maps SourceId → the raw source text that was sent to the LLM.
     /// Used by the grounding system to verify claims against source.
     pub source_texts: HashMap<SourceId, String>,
@@ -72,6 +76,7 @@ impl Extractor {
             max_chunk_tokens: config.extraction.max_chunk_tokens,
             cache: None,
             progress: None,
+            known_entities: crate::graph_context::GraphPrimedContext::new(Vec::new()),
         })
     }
 
@@ -94,6 +99,13 @@ impl Extractor {
     /// (cache hit or LLM result). Arguments: (done, total, source_uri).
     pub fn with_progress(mut self, f: ChunkProgressFn) -> Self {
         self.progress = Some(f);
+        self
+    }
+
+    /// Inject known entities from the existing knowledge graph into LLM prompts.
+    pub fn with_known_entities(mut self, ctx: crate::graph_context::GraphPrimedContext) -> Self {
+        tracing::info!("graph-primed context: {} known entities", ctx.entities.len());
+        self.known_entities = ctx;
         self
     }
 
@@ -138,9 +150,20 @@ impl Extractor {
 
         let mut cache_hits_data: Vec<(SourceId, String, ExtractionResult)> = Vec::new();
         let mut llm_work: Vec<ChunkWork> = Vec::new();
+        let mut structural_results: Vec<(SourceId, String, ExtractionResult)> = Vec::new();
 
         for doc in documents {
             for chunk in &doc.chunks {
+                // ── Tier Router: structural or LLM? ──
+                if crate::router::classify(chunk) == crate::router::Tier::Structural {
+                    let result = crate::structural::extract_structural(chunk, &doc.uri);
+                    if !result.claims.is_empty() || !result.entities.is_empty() {
+                        structural_results.push((doc.source_id, doc.uri.clone(), result));
+                        continue;
+                    }
+                    // Fallthrough to LLM if structural produced nothing
+                }
+
                 if let Some(ref cache) = self.cache {
                     if let Some(cached) = cache.get(&chunk.content) {
                         tracing::debug!("extraction cache hit for chunk in {}", doc.uri);
@@ -173,9 +196,9 @@ impl Extractor {
             }
         }
 
-        // Total = cache hits + original LLM chunks (progress denominator).
+        // Total = structural + cache hits + original LLM chunks (progress denominator).
         // Sub-chunk splits are an implementation detail — not exposed to callers.
-        let total_chunks = cache_hits_data.len() + llm_work.len();
+        let total_chunks = structural_results.len() + cache_hits_data.len() + llm_work.len();
         let mut done: usize = 0;
 
         // ── Process cache hits (instant, no LLM) ───────────────────────
@@ -189,6 +212,26 @@ impl Extractor {
             if let Some(ref pf) = self.progress {
                 pf(done, total_chunks, &source_uri);
             }
+        }
+
+        // ── Process structural results (instant, no LLM) ─────────────
+        let structural_count = structural_results.len();
+        for (source_id, source_uri, struct_result) in structural_results {
+            // Use min_confidence=0.0 for structural — they're always 0.99, never filtered
+            let converted = Self::convert_result_static(struct_result, source_id, workspace_id, 0.0);
+            output.merge(converted);
+            output.chunks_processed += 1;
+            output.structural_extractions += 1;
+            done += 1;
+            if let Some(ref pf) = self.progress {
+                pf(done, total_chunks, &source_uri);
+            }
+        }
+        if structural_count > 0 {
+            tracing::info!(
+                "structural extraction: {} chunks processed (zero LLM calls)",
+                structural_count
+            );
         }
 
         // ── Spawn LLM tasks — one task per original chunk ───────────────
@@ -288,13 +331,14 @@ impl Extractor {
 
         tracing::info!(
             "extraction complete: {} claims, {} entities, {} relations \
-             from {} sources ({} chunks, {} cache hits)",
+             from {} sources ({} chunks, {} cache hits, {} structural)",
             output.claims.len(),
             output.entities.len(),
             output.relations.len(),
             output.sources_processed,
             output.chunks_processed,
             output.cache_hits,
+            output.structural_extractions,
         );
 
         Ok(output)
@@ -478,6 +522,7 @@ impl ExtractionOutput {
         self.sources_processed += other.sources_processed;
         self.chunks_processed += other.chunks_processed;
         self.cache_hits += other.cache_hits;
+        self.structural_extractions += other.structural_extractions;
         self.source_texts.extend(other.source_texts);
         self.claim_source_quotes.extend(other.claim_source_quotes);
     }

@@ -352,6 +352,7 @@ pub async fn run_pipeline(
         sources_processed: truly_changed.len(),
         chunks_processed: extraction.chunks_processed,
         cache_hits: extraction.cache_hits,
+        structural_extractions: extraction.structural_extractions,
         source_texts: extraction.source_texts,
         claim_source_quotes: extraction.claim_source_quotes,
     };
