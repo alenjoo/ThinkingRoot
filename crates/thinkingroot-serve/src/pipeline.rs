@@ -44,6 +44,7 @@ pub struct PipelineResult {
     pub health_score: u8,
     pub cache_hits: usize,
     pub early_cutoffs: usize,
+    pub structural_extractions: usize,
 }
 
 pub async fn run_pipeline(
@@ -109,13 +110,27 @@ pub async fn run_pipeline(
             health_score: 0,
             cache_hits: 0,
             early_cutoffs: skipped,
+            structural_extractions: 0,
         });
     }
 
     // ─── Phase 2: Extract potentially-changed documents (with cache) ───
     let workspace_id = WorkspaceId::new();
     let cache_hits;
-    let extraction;
+    let mut extraction;
+
+    // ── Graph-Primed Context: inject known entities into extraction ──
+    let known_entities = match storage.graph.get_known_entities() {
+        Ok(entities) if !entities.is_empty() => {
+            tracing::info!("graph-primed context: {} known entities loaded", entities.len());
+            thinkingroot_extract::GraphPrimedContext::from_tuples(entities)
+        }
+        Ok(_) => thinkingroot_extract::GraphPrimedContext::new(Vec::new()),
+        Err(e) => {
+            tracing::warn!("failed to load known entities for graph-priming: {e}");
+            thinkingroot_extract::GraphPrimedContext::new(Vec::new())
+        }
+    };
 
     if potentially_changed.is_empty() {
         // Only deletions — no extraction needed.
@@ -125,7 +140,8 @@ pub async fn run_pipeline(
         let extractor = {
             let e = thinkingroot_extract::Extractor::new(&config)
                 .await?
-                .with_cache_dir(&data_dir);
+                .with_cache_dir(&data_dir)
+                .with_known_entities(known_entities);
             if let Some(ref tx) = progress {
                 let tx_chunk = tx.clone();
                 let pf = Arc::new(move |done: usize, total: usize, uri: &str| {
@@ -159,50 +175,81 @@ pub async fn run_pipeline(
         extraction = raw;
     }
 
-    // ─── Phase 2b: Ground extraction output ─────────────────────────────
-    // The Grounding Tribunal verifies each claim against its source text.
-    // 4 judges: lexical, span, semantic (embeddings), NLI (entailment).
-    // Claims that fail grounding (score < 0.25) are rejected before they
-    // touch the database.
+    // Log tiered extraction stats.
+    if extraction.structural_extractions > 0 {
+        tracing::info!(
+            "tiered extraction: {} structural (zero LLM), {} cache hits, {} LLM calls",
+            extraction.structural_extractions,
+            extraction.cache_hits,
+            extraction.chunks_processed.saturating_sub(extraction.cache_hits + extraction.structural_extractions),
+        );
+    }
+
+    // ─── Phase 2b: Cascade Grounding ─────────────────────────────────
+    // Structural claims (from AST) are auto-grounded at 0.99 — skip tribunal.
+    // LLM claims run the full 4-judge tribunal (unchanged behavior).
     //
     // NliJudge::load() uses hf-hub's sync API (reqwest::blocking) which must
     // NOT be called from within an async context — it creates a nested Tokio
     // runtime that deadlocks the worker thread. We use spawn_blocking to move
     // it onto a dedicated blocking thread.
-    #[cfg(feature = "vector")]
-    let mut nli_judge = {
-        let data_dir_clone = data_dir.clone();
-        match tokio::task::spawn_blocking(move || {
-            thinkingroot_ground::NliJudge::load(Some(&data_dir_clone))
-        })
-        .await
-        {
-            Ok(Ok(judge)) => Some(judge),
-            Ok(Err(e)) => {
-                tracing::warn!("NLI model (Judge 4) unavailable, using Judges 1-3 only: {e}");
-                None
-            }
-            Err(e) => {
-                tracing::warn!("NLI model load task failed: {e}, using Judges 1-3 only");
-                None
-            }
-        }
-    };
 
-    let extraction = if !extraction.claims.is_empty() {
+    // Step 1: Auto-ground structural claims.
+    let mut structural_count = 0usize;
+    for claim in &mut extraction.claims {
+        if claim.extraction_tier == thinkingroot_core::types::ExtractionTier::Structural {
+            claim.grounding_score = Some(0.99);
+            claim.grounding_method = Some(thinkingroot_core::types::GroundingMethod::Structural);
+            structural_count += 1;
+        }
+    }
+    if structural_count > 0 {
+        tracing::info!(
+            "cascade grounding: {} structural claims auto-grounded at 0.99 (skipped tribunal)",
+            structural_count
+        );
+    }
+
+    // Step 2: Check for LLM claims that need the full tribunal.
+    let llm_claim_count = extraction.claims.iter()
+        .filter(|c| c.extraction_tier == thinkingroot_core::types::ExtractionTier::Llm)
+        .count();
+
+    if llm_claim_count > 0 {
+        // Load NLI judge for LLM claims.
+        #[cfg(feature = "vector")]
+        let mut nli_judge = {
+            let data_dir_clone = data_dir.clone();
+            match tokio::task::spawn_blocking(move || {
+                thinkingroot_ground::NliJudge::load(Some(&data_dir_clone))
+            })
+            .await
+            {
+                Ok(Ok(judge)) => Some(judge),
+                Ok(Err(e)) => {
+                    tracing::warn!("NLI model (Judge 4) unavailable, using Judges 1-3 only: {e}");
+                    None
+                }
+                Err(e) => {
+                    tracing::warn!("NLI model load task failed: {e}, using Judges 1-3 only");
+                    None
+                }
+            }
+        };
+
         let grounder = thinkingroot_ground::Grounder::new(
             thinkingroot_ground::GroundingConfig::default(),
         );
         let pre_count = extraction.claims.len();
-        let mut grounded = grounder.ground(
+        extraction = grounder.ground(
             extraction,
             #[cfg(feature = "vector")]
             Some(&mut storage.vector),
             #[cfg(feature = "vector")]
             nli_judge.as_mut(),
         );
-        thinkingroot_ground::dedup::dedup_claims(&mut grounded.claims);
-        let post_count = grounded.claims.len();
+        thinkingroot_ground::dedup::dedup_claims(&mut extraction.claims);
+        let post_count = extraction.claims.len();
         if pre_count != post_count {
             tracing::info!(
                 "grounding: {} → {} claims ({} rejected/deduped)",
@@ -211,10 +258,10 @@ pub async fn run_pipeline(
                 pre_count - post_count,
             );
         }
-        grounded
     } else {
-        extraction
-    };
+        // All claims are structural — just dedup, skip tribunal.
+        thinkingroot_ground::dedup::dedup_claims(&mut extraction.claims);
+    }
 
     // ─── Phase 3: Fingerprint check ────────────────────────────────────
     // For each potentially-changed doc, compute a fingerprint of its extracted
@@ -321,6 +368,7 @@ pub async fn run_pipeline(
             health_score: verification.health_score.as_percentage(),
             cache_hits,
             early_cutoffs: skipped + fingerprint_cutoffs,
+            structural_extractions: extraction.structural_extractions,
         });
     }
 
@@ -335,6 +383,8 @@ pub async fn run_pipeline(
     // Filter extraction to only truly-changed sources.
     let truly_changed_ids: HashSet<thinkingroot_core::types::SourceId> =
         truly_changed.iter().map(|d| d.source_id).collect();
+
+    let structural_extractions = extraction.structural_extractions;
 
     let filtered_extraction = thinkingroot_extract::ExtractionOutput {
         claims: extraction
@@ -508,6 +558,7 @@ pub async fn run_pipeline(
         health_score: verification.health_score.as_percentage(),
         cache_hits,
         early_cutoffs: skipped + fingerprint_cutoffs,
+        structural_extractions,
     })
 }
 
