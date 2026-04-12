@@ -43,12 +43,26 @@ pub fn parse(path: &Path, language: &str) -> Result<DocumentIR> {
 
 fn get_language(name: &str) -> Result<tree_sitter::Language> {
     match name {
-        "rust" => Ok(tree_sitter_rust::LANGUAGE.into()),
-        "python" => Ok(tree_sitter_python::LANGUAGE.into()),
+        "rust"       => Ok(tree_sitter_rust::LANGUAGE.into()),
+        "python"     => Ok(tree_sitter_python::LANGUAGE.into()),
         "javascript" => Ok(tree_sitter_javascript::LANGUAGE.into()),
         "typescript" => Ok(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
-        "tsx" => Ok(tree_sitter_typescript::LANGUAGE_TSX.into()),
-        "go" => Ok(tree_sitter_go::LANGUAGE.into()),
+        "tsx"        => Ok(tree_sitter_typescript::LANGUAGE_TSX.into()),
+        "go"         => Ok(tree_sitter_go::LANGUAGE.into()),
+        "java"       => Ok(tree_sitter_java::LANGUAGE.into()),
+        "c"          => Ok(tree_sitter_c::LANGUAGE.into()),
+        "cpp"        => Ok(tree_sitter_cpp::LANGUAGE.into()),
+        "csharp"     => Ok(tree_sitter_c_sharp::LANGUAGE.into()),
+        "ruby"       => Ok(tree_sitter_ruby::LANGUAGE.into()),
+        "kotlin"     => Ok(tree_sitter_kotlin_ng::LANGUAGE.into()),
+        "swift"      => Ok(tree_sitter_swift::LANGUAGE.into()),
+        "php"        => Ok(tree_sitter_php::LANGUAGE_PHP.into()),
+        "bash"       => Ok(tree_sitter_bash::LANGUAGE.into()),
+        "lua"        => Ok(tree_sitter_lua::LANGUAGE.into()),
+        "scala"      => Ok(tree_sitter_scala::LANGUAGE.into()),
+        "elixir"     => Ok(tree_sitter_elixir::LANGUAGE.into()),
+        "haskell"    => Ok(tree_sitter_haskell::LANGUAGE.into()),
+        "r"          => Ok(tree_sitter_r::LANGUAGE.into()),
         other => Err(Error::UnsupportedFileType {
             extension: other.to_string(),
         }),
@@ -64,12 +78,19 @@ fn extract_chunks(source: &str, node: tree_sitter::Node, language: &str, doc: &m
         let text = &source[child.byte_range()];
 
         match child.kind() {
-            // Rust
+            // Rust / Python / JS / TS / Go / Java / C / C++ / C# / Ruby / Kotlin /
+            // Swift / PHP / Bash / Lua / Scala / Elixir / Haskell / R
             "function_item"
             | "function_definition"
             | "method_definition"
             | "function_declaration"
-            | "method_declaration" => {
+            | "method_declaration"
+            | "constructor_declaration"
+            | "local_function_statement"
+            | "local_function"
+            | "singleton_method"
+            // Ruby: `def method_name` → node kind is literally "method"
+            | "method" => {
                 let name =
                     find_child_by_field(&child, "name").map(|n| source[n.byte_range()].to_string());
                 let params = find_child_by_field(&child, "parameters")
@@ -148,7 +169,31 @@ fn extract_chunks(source: &str, node: tree_sitter::Node, language: &str, doc: &m
             | "class_declaration"
             | "interface_declaration"
             | "type_alias_declaration"
-            | "type_spec" => {
+            | "type_spec"
+            // Ruby: `class Foo` → node kind is literally "class"
+            | "class"
+            // C / C++
+            | "struct_specifier"
+            | "class_specifier"
+            | "enum_specifier"
+            | "type_definition"
+            // Java / C#
+            | "enum_declaration"
+            | "record_declaration"
+            // C# / Swift
+            | "struct_declaration"
+            // Kotlin
+            | "object_declaration"
+            // Swift
+            | "protocol_declaration"
+            // PHP
+            | "trait_declaration"
+            // Scala
+            | "trait_definition"
+            | "object_definition"
+            // Haskell
+            | "data_declaration"
+            | "newtype_declaration" => {
                 let name =
                     find_child_by_field(&child, "name").map(|n| source[n.byte_range()].to_string());
                 let field_types = extract_field_types(source, &child);
@@ -162,10 +207,25 @@ fn extract_chunks(source: &str, node: tree_sitter::Node, language: &str, doc: &m
                     ..Default::default()
                 };
                 doc.add_chunk(chunk);
+
+                // Recurse into class/module bodies so nested method declarations
+                // are also extracted as FunctionDef chunks (Java, C#, Ruby, etc.)
+                extract_chunks(source, child, language, doc);
             }
 
             // Use / import statements
-            "use_declaration" | "import_statement" | "import_declaration" | "import_spec" => {
+            "use_declaration"
+            | "import_statement"
+            | "import_declaration"
+            | "import_spec"
+            // C / C++ (#include)
+            | "preproc_include"
+            // C# (using System;)
+            | "using_directive"
+            // Kotlin
+            | "import_header"
+            // PHP
+            | "namespace_use_declaration" => {
                 let chunk = Chunk::new(text, ChunkType::Import, start_line, end_line)
                     .with_language(language);
                 doc.add_chunk(chunk);
@@ -244,6 +304,51 @@ fn collect_calls(source: &str, node: tree_sitter::Node, depth: u8) -> Vec<String
             "call" => {
                 // Python: both function calls and method calls
                 if let Some(func) = child.child_by_field_name("function") {
+                    let raw = &source[func.byte_range()];
+                    if let Some(name) = last_identifier(raw) {
+                        calls.push(name);
+                    }
+                }
+            }
+            // Java: obj.method(args)
+            "method_invocation" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let raw = source[name_node.byte_range()].to_string();
+                    if !raw.is_empty() {
+                        calls.push(raw);
+                    }
+                }
+            }
+            // C#: func(args) or obj.Method(args)
+            "invocation_expression" => {
+                if let Some(func) = child.child_by_field_name("function") {
+                    let raw = &source[func.byte_range()];
+                    if let Some(name) = last_identifier(raw) {
+                        calls.push(name);
+                    }
+                }
+            }
+            // PHP: func(args)
+            "function_call_expression" => {
+                if let Some(func) = child.child_by_field_name("function") {
+                    let raw = &source[func.byte_range()];
+                    if let Some(name) = last_identifier(raw) {
+                        calls.push(name);
+                    }
+                }
+            }
+            // PHP: $obj->method(args)
+            "member_call_expression" => {
+                if let Some(method) = child.child_by_field_name("name") {
+                    let raw = source[method.byte_range()].to_string();
+                    if !raw.is_empty() {
+                        calls.push(raw);
+                    }
+                }
+            }
+            // Lua: func(args)
+            "function_call" => {
+                if let Some(func) = child.child_by_field_name("name") {
                     let raw = &source[func.byte_range()];
                     if let Some(name) = last_identifier(raw) {
                         calls.push(name);
@@ -455,6 +560,92 @@ struct Config {
                 .iter()
                 .any(|c| c.chunk_type == ChunkType::TypeDef)
         );
+    }
+
+    #[test]
+    fn java_function_is_parsed() {
+        let source = r#"
+public class Main {
+    public String greet(String name) {
+        return "Hello " + name;
+    }
+}
+"#;
+        let mut doc = DocumentIR::new(SourceId::new(), "Main.java".to_string(), SourceType::File);
+        let ts_lang: tree_sitter::Language = tree_sitter_java::LANGUAGE.into();
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_lang).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        extract_chunks(source, tree.root_node(), "java", &mut doc);
+        assert!(doc.chunks.iter().any(|c| c.chunk_type == ChunkType::FunctionDef),
+            "java method_declaration must produce FunctionDef");
+        let greet = doc.chunks.iter().find(|c| c.metadata.function_name.as_deref() == Some("greet"));
+        assert!(greet.is_some(), "greet method must be named");
+    }
+
+    #[test]
+    fn c_function_is_parsed() {
+        let source = r#"
+#include <stdio.h>
+
+int add(int a, int b) {
+    return a + b;
+}
+"#;
+        let mut doc = DocumentIR::new(SourceId::new(), "math.c".to_string(), SourceType::File);
+        let ts_lang: tree_sitter::Language = tree_sitter_c::LANGUAGE.into();
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_lang).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        extract_chunks(source, tree.root_node(), "c", &mut doc);
+        assert!(doc.chunks.iter().any(|c| c.chunk_type == ChunkType::FunctionDef),
+            "c function_definition must produce FunctionDef");
+        assert!(doc.chunks.iter().any(|c| c.chunk_type == ChunkType::Import),
+            "preproc_include must produce Import");
+    }
+
+    #[test]
+    fn csharp_method_is_parsed() {
+        let source = r#"
+using System;
+
+public class MyClass {
+    public string Hello(string name) {
+        return $"Hello {name}";
+    }
+}
+"#;
+        let mut doc = DocumentIR::new(SourceId::new(), "MyClass.cs".to_string(), SourceType::File);
+        let ts_lang: tree_sitter::Language = tree_sitter_c_sharp::LANGUAGE.into();
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_lang).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        extract_chunks(source, tree.root_node(), "csharp", &mut doc);
+        assert!(doc.chunks.iter().any(|c| c.chunk_type == ChunkType::FunctionDef),
+            "csharp method_declaration must produce FunctionDef");
+        assert!(doc.chunks.iter().any(|c| c.chunk_type == ChunkType::Import),
+            "using_directive must produce Import");
+    }
+
+    #[test]
+    fn ruby_method_is_parsed() {
+        let source = r#"
+class Greeter
+  def greet(name)
+    "Hello #{name}"
+  end
+end
+"#;
+        let mut doc = DocumentIR::new(SourceId::new(), "greeter.rb".to_string(), SourceType::File);
+        let ts_lang: tree_sitter::Language = tree_sitter_ruby::LANGUAGE.into();
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_lang).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        extract_chunks(source, tree.root_node(), "ruby", &mut doc);
+        assert!(doc.chunks.iter().any(|c| c.chunk_type == ChunkType::FunctionDef),
+            "ruby method must produce FunctionDef");
+        let greet = doc.chunks.iter().find(|c| c.metadata.function_name.as_deref() == Some("greet"));
+        assert!(greet.is_some(), "greet method must be named");
     }
 
     #[test]
