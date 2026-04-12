@@ -1064,4 +1064,32 @@ mod tests {
             );
         }
     }
+
+    // ── Missing edge cases ────────────────────────────────────────────────────
+
+    #[test]
+    fn heading_empty_content_returns_empty() {
+        // Both chunk.heading == None AND chunk.content.trim() is empty → must return empty
+        let chunk = Chunk::new("", ChunkType::Heading, 1, 1);
+        // heading field is None (not set)
+        // content is "" → trim() is "" → should return empty
+        let result = extract_structural(&chunk, "docs/guide.md");
+        assert!(result.claims.is_empty());
+        assert!(result.entities.is_empty());
+        assert!(result.relations.is_empty());
+    }
+
+    #[test]
+    fn git_commit_with_empty_changed_files_returns_empty() {
+        // commit_author is set but changed_files is empty → extract_git_commit returns empty
+        let meta = ChunkMetadata {
+            commit_author: Some("Alice".to_string()),
+            changed_files: Vec::new(), // empty
+            ..Default::default()
+        };
+        let chunk = make_chunk(ChunkType::Prose, "feat: add feature", meta);
+        let result = extract_structural(&chunk, "git://abc123");
+        assert!(result.claims.is_empty());
+        assert!(result.relations.is_empty());
+    }
 }
