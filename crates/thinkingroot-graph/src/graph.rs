@@ -132,6 +132,24 @@ impl GraphStore {
     /// Uses `:replace` to redefine the relation with the new column,
     /// defaulting existing rows to "llm".
     fn migrate_claims_extraction_tier(&self) -> Result<()> {
+        // Probe: if extraction_tier column already exists, skip the migration.
+        // This happens on fresh databases (create_schema just created the schema
+        // with the column) and on databases already migrated. Without this guard,
+        // `:replace` would rebuild the relation on every init() call.
+        let probe = self.db.run_script(
+            "?[extraction_tier] := *claims{id: 'probe-noop', extraction_tier}",
+            BTreeMap::new(),
+            ScriptMutability::Immutable,
+        );
+        if probe.is_ok() {
+            // Column already present — nothing to do.
+            return Ok(());
+        }
+
+        // Pre-condition: grounding_score and grounding_method columns must already exist
+        // in the claims relation (they were added before the TEFS-GP branch). This migration
+        // only adds extraction_tier. If you add another column after this one, extend the
+        // :replace below rather than chaining a new migration.
         let migration = r#"
             {
                 ?[id, statement, claim_type, source_id, confidence, sensitivity, workspace_id, created_at, grounding_score, grounding_method, extraction_tier] :=
@@ -141,12 +159,11 @@ impl GraphStore {
             }
         "#;
 
-        // Only run migration if schema already exists with old columns.
-        // If the :create already included extraction_tier (fresh DB), this is a no-op
-        // because the :replace will produce identical schema.
+        // Column missing: run :replace migration to add extraction_tier,
+        // backfilling existing rows with "llm".
         match self.db.run_default(migration) {
             Ok(_) => {
-                tracing::debug!("claims extraction_tier migration applied (or already current)");
+                tracing::debug!("claims extraction_tier migration applied");
                 Ok(())
             }
             Err(e) => {
@@ -1129,7 +1146,7 @@ impl GraphStore {
             grounding_method: None,
             extraction_tier: match dv_to_string(&row[7]).as_str() {
                 "structural" => thinkingroot_core::types::ExtractionTier::Structural,
-                _ => thinkingroot_core::types::ExtractionTier::Llm,
+                "llm" | _ => thinkingroot_core::types::ExtractionTier::Llm,
             },
         }))
     }
