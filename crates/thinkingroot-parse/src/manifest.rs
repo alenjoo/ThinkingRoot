@@ -54,7 +54,10 @@ fn make_dep_chunk(raw_line: &str, project_name: &str, dep_name: &str) -> Chunk {
 fn parse_cargo_toml(content: &str) -> Vec<Chunk> {
     let value: toml::Value = match toml::from_str(content) {
         Ok(v) => v,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            tracing::warn!("failed to parse Cargo.toml: {e}");
+            return Vec::new();
+        }
     };
     let project_name = value
         .get("package")
@@ -81,7 +84,10 @@ fn parse_cargo_toml(content: &str) -> Vec<Chunk> {
 fn parse_package_json(content: &str) -> Vec<Chunk> {
     let value: serde_json::Value = match serde_json::from_str(content) {
         Ok(v) => v,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            tracing::warn!("failed to parse package.json: {e}");
+            return Vec::new();
+        }
     };
     let project_name = value["name"].as_str().unwrap_or("unknown").to_string();
     let mut chunks = Vec::new();
@@ -106,8 +112,8 @@ fn parse_go_mod(content: &str) -> Vec<Chunk> {
 
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("module ") {
-            project_name = trimmed["module ".len()..].trim().to_string();
+        if let Some(stripped) = trimmed.strip_prefix("module ") {
+            project_name = stripped.trim().to_string();
         } else if trimmed == "require (" {
             in_require = true;
         } else if trimmed == ")" && in_require {
@@ -116,8 +122,8 @@ fn parse_go_mod(content: &str) -> Vec<Chunk> {
             if let Some(dep_name) = trimmed.split_whitespace().next() {
                 chunks.push(make_dep_chunk(trimmed, &project_name, dep_name));
             }
-        } else if trimmed.starts_with("require ") && !trimmed.contains('(') {
-            let rest = trimmed["require ".len()..].trim();
+        } else if let Some(rest_raw) = trimmed.strip_prefix("require ").filter(|_| !trimmed.contains('(')) {
+            let rest = rest_raw.trim();
             if let Some(dep_name) = rest.split_whitespace().next() {
                 chunks.push(make_dep_chunk(rest, &project_name, dep_name));
             }
@@ -134,8 +140,12 @@ fn parse_requirements_txt(content: &str) -> Vec<Chunk> {
         if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('-') {
             continue;
         }
+        // Skip VCS URLs like git+https://github.com/...
+        if trimmed.contains("://") {
+            continue;
+        }
         let dep_name = trimmed
-            .split(|c: char| matches!(c, '>' | '<' | '=' | '!' | '~' | '[' | ';' | ' '))
+            .split(['>', '<', '=', '!', '~', '[', ';', ' '])
             .next()
             .unwrap_or(trimmed)
             .to_string();
@@ -149,7 +159,10 @@ fn parse_requirements_txt(content: &str) -> Vec<Chunk> {
 fn parse_pyproject_toml(content: &str) -> Vec<Chunk> {
     let value: toml::Value = match toml::from_str(content) {
         Ok(v) => v,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            tracing::warn!("failed to parse pyproject.toml: {e}");
+            return Vec::new();
+        }
     };
     let project_name = value
         .get("project")
@@ -192,7 +205,7 @@ fn parse_pyproject_toml(content: &str) -> Vec<Chunk> {
         for dep_val in deps {
             if let Some(dep_str) = dep_val.as_str() {
                 let dep_name = dep_str
-                    .split(|c: char| matches!(c, '>' | '<' | '=' | '!' | '~' | '[' | ';'))
+                    .split(['>', '<', '=', '!', '~', '[', ';'])
                     .next()
                     .unwrap_or(dep_str)
                     .trim()
@@ -285,6 +298,14 @@ tempfile = "3"
         assert!(names.contains(&"requests"));
         assert!(names.contains(&"Django"));
         assert!(names.contains(&"numpy"));
+    }
+
+    #[test]
+    fn requirements_txt_skips_vcs_urls() {
+        let content = "requests>=2.28\ngit+https://github.com/user/repo.git#egg=mypackage\n";
+        let chunks = parse_requirements_txt(content);
+        assert_eq!(chunks.len(), 1, "VCS URL lines must be skipped");
+        assert_eq!(chunks[0].metadata.import_path.as_deref(), Some("requests"));
     }
 
     #[test]

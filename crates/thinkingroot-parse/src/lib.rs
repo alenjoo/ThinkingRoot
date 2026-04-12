@@ -30,16 +30,16 @@ pub fn parse_file(path: &Path) -> Result<DocumentIR> {
         "go" => code::parse(path, "go"),
         "pdf" => pdf::parse(path),
         // Manifest files get structured dependency parsing.
-        "toml" if path.file_name().map_or(false, |n| n == "Cargo.toml" || n == "pyproject.toml") => {
+        "toml" if path.file_name().is_some_and(|n| n == "Cargo.toml" || n == "pyproject.toml") => {
             manifest::parse(path)
         }
-        "json" if path.file_name().map_or(false, |n| n == "package.json") => {
+        "json" if path.file_name().is_some_and(|n| n == "package.json") => {
             manifest::parse(path)
         }
-        "mod" if path.file_name().map_or(false, |n| n == "go.mod") => {
+        "mod" if path.file_name().is_some_and(|n| n == "go.mod") => {
             manifest::parse(path)
         }
-        "txt" if path.file_name().map_or(false, |n| n == "requirements.txt") => {
+        "txt" if path.file_name().is_some_and(|n| n == "requirements.txt") => {
             manifest::parse(path)
         }
         // Treat unknown text files as plain markdown for basic extraction.
