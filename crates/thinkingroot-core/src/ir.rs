@@ -111,6 +111,9 @@ pub enum ChunkType {
     Comment,
     /// Module-level documentation.
     ModuleDoc,
+    /// A single dependency declaration from a project manifest file
+    /// (Cargo.toml, package.json, go.mod, requirements.txt, pyproject.toml).
+    ManifestDependency,
 }
 
 /// Additional metadata for a chunk, depending on its type.
@@ -136,11 +139,41 @@ pub struct ChunkMetadata {
     /// For TypeDef (struct_item): the non-primitive field types.
     /// Each entry is the base type name (generics stripped).
     pub field_types: Vec<String>,
+    // Gap 2: Code call graph
+    /// Functions/methods called within this function body (simple names, deduplicated).
+    pub calls_functions: Vec<String>,
+    // Gap 3: Markdown structure
+    /// Heading depth: H1=1 … H6=6. `None` for non-heading chunks.
+    pub heading_level: Option<u8>,
+    /// Hyperlink targets found in this chunk (non-empty, non-fragment URLs).
+    pub links: Vec<String>,
+    // Gap 4: Git history
+    /// Commit author name (git commits only).
+    pub author: Option<String>,
+    /// File paths changed in this commit (from diff --stat output).
+    pub changed_files: Vec<String>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chunk_metadata_new_fields_default() {
+        let m = ChunkMetadata::default();
+        assert!(m.calls_functions.is_empty());
+        assert!(m.heading_level.is_none());
+        assert!(m.links.is_empty());
+        assert!(m.author.is_none());
+        assert!(m.changed_files.is_empty());
+    }
+
+    #[test]
+    fn manifest_dependency_chunk_type_roundtrips() {
+        let chunk = Chunk::new("serde = \"1\"", ChunkType::ManifestDependency, 1, 1);
+        let json = serde_json::to_string(&chunk.chunk_type).unwrap();
+        assert_eq!(json, "\"manifest_dependency\"");
+    }
 
     #[test]
     fn document_ir_basics() {
