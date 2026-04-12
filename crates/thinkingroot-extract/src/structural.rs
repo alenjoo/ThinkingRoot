@@ -124,6 +124,8 @@ fn extract_function_def(chunk: &Chunk, source_uri: &str) -> ExtractionResult {
 }
 
 /// TypeDef → Entity(inferred type) + Claim(definition) + Relation(file contains type)
+///         + optional Relation(implements) if trait_name is set
+///         + optional Relation(depends_on) for each field_type
 fn extract_type_def(chunk: &Chunk, source_uri: &str) -> ExtractionResult {
     let name = match &chunk.metadata.type_name {
         Some(n) if !n.is_empty() => n.clone(),
@@ -164,11 +166,63 @@ fn extract_type_def(chunk: &Chunk, source_uri: &str) -> ExtractionResult {
         confidence: 0.99,
     };
 
-    ExtractionResult {
+    let mut result = ExtractionResult {
         claims: vec![def_claim],
         entities: vec![entity, file_entity],
         relations: vec![file_contains],
+    };
+
+    // If this is `impl Trait for Type`, emit an `implements` relation.
+    if let Some(trait_name) = &chunk.metadata.trait_name {
+        if !trait_name.is_empty() {
+            let trait_entity = ExtractedEntity {
+                name: trait_name.clone(),
+                entity_type: "concept".to_string(),
+                aliases: Vec::new(),
+                description: Some(format!("Trait implemented by {name}")),
+            };
+            let implements_rel = ExtractedRelation {
+                from_entity: name.clone(),
+                to_entity: trait_name.clone(),
+                relation_type: "implements".to_string(),
+                description: Some(format!("{name} implements {trait_name}")),
+                confidence: 0.99,
+            };
+            result.entities.push(trait_entity);
+            result.relations.push(implements_rel);
+
+            let impl_claim = ExtractedClaim {
+                statement: format!("{name} implements the {trait_name} trait"),
+                claim_type: "definition".to_string(),
+                confidence: 0.99,
+                entities: vec![name.clone(), trait_name.clone()],
+                source_quote: Some(chunk.content.lines().next().unwrap_or("").to_string()),
+                extraction_tier: ExtractionTier::Structural,
+            };
+            result.claims.push(impl_claim);
+        }
     }
+
+    // For each field type, emit a `depends_on` relation.
+    for field_type in &chunk.metadata.field_types {
+        let field_entity = ExtractedEntity {
+            name: field_type.clone(),
+            entity_type: "concept".to_string(),
+            aliases: Vec::new(),
+            description: None,
+        };
+        let depends_rel = ExtractedRelation {
+            from_entity: name.clone(),
+            to_entity: field_type.clone(),
+            relation_type: "depends_on".to_string(),
+            description: Some(format!("{name} has a field of type {field_type}")),
+            confidence: 0.99,
+        };
+        result.entities.push(field_entity);
+        result.relations.push(depends_rel);
+    }
+
+    result
 }
 
 /// Import → Entity(file) + Entity(imported module) + Claim(dependency) + Relation(uses)
@@ -576,5 +630,54 @@ mod tests {
         assert_eq!(result.claims[0].claim_type, "definition");
         assert_eq!(result.claims[0].extraction_tier, ExtractionTier::Structural);
         assert!(result.claims[0].statement.contains("GraphStore"));
+    }
+
+    #[test]
+    fn impl_with_trait_produces_implements_relation() {
+        let mut chunk = Chunk::new(
+            "impl Serialize for MyStruct {}",
+            ChunkType::TypeDef,
+            1, 1,
+        );
+        chunk.metadata = ChunkMetadata {
+            type_name: Some("MyStruct".to_string()),
+            trait_name: Some("Serialize".to_string()),
+            ..Default::default()
+        };
+
+        let result = extract_structural(&chunk, "src/models.rs");
+
+        let implements = result.relations.iter()
+            .find(|r| r.relation_type == "implements");
+        assert!(
+            implements.is_some(),
+            "impl Trait for Struct must produce an implements relation"
+        );
+        let rel = implements.unwrap();
+        assert_eq!(rel.from_entity, "MyStruct");
+        assert_eq!(rel.to_entity, "Serialize");
+    }
+
+    #[test]
+    fn struct_with_field_types_produces_depends_on_relations() {
+        let mut chunk = Chunk::new(
+            "struct Engine { storage: StorageBackend, config: EngineConfig }",
+            ChunkType::TypeDef,
+            1, 3,
+        );
+        chunk.metadata = ChunkMetadata {
+            type_name: Some("Engine".to_string()),
+            field_types: vec!["StorageBackend".to_string(), "EngineConfig".to_string()],
+            ..Default::default()
+        };
+
+        let result = extract_structural(&chunk, "src/engine.rs");
+
+        let deps: Vec<_> = result.relations.iter()
+            .filter(|r| r.relation_type == "depends_on")
+            .collect();
+        assert_eq!(deps.len(), 2, "two field types → two depends_on relations");
+        assert!(deps.iter().any(|r| r.to_entity == "StorageBackend"));
+        assert!(deps.iter().any(|r| r.to_entity == "EngineConfig"));
     }
 }

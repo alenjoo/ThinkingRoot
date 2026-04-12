@@ -130,6 +130,12 @@ pub struct ChunkMetadata {
     pub visibility: Option<String>,
     /// Parent scope name (e.g., the struct a method belongs to).
     pub parent: Option<String>,
+    /// For TypeDef (impl_item): the trait being implemented, if any.
+    /// Set when the chunk is `impl Trait for Type`.
+    pub trait_name: Option<String>,
+    /// For TypeDef (struct_item): the non-primitive field types.
+    /// Each entry is the base type name (generics stripped).
+    pub field_types: Vec<String>,
 }
 
 #[cfg(test)]

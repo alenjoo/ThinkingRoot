@@ -89,12 +89,47 @@ fn extract_chunks(source: &str, node: tree_sitter::Node, language: &str, doc: &m
                 doc.add_chunk(chunk);
             }
 
-            // Struct / class / interface / type definitions
+            // impl blocks: `impl Trait for Type` or `impl Type`
+            "impl_item" => {
+                // For `impl Trait for Type`, tree-sitter Rust grammar uses:
+                //   field "type"  → the implementing type (after `for`)
+                //   field "trait" → the trait being implemented
+                // For `impl Type` (no trait), field "trait" is absent and
+                // field "type" holds the type name directly.
+                let type_node = find_child_by_field(&child, "type");
+                let trait_node = find_child_by_field(&child, "trait");
+
+                let (type_name, trait_name) = match (type_node, trait_node) {
+                    (Some(ty), Some(tr)) => {
+                        // `impl Trait for Type`
+                        (
+                            Some(source[ty.byte_range()].to_string()),
+                            Some(source[tr.byte_range()].to_string()),
+                        )
+                    }
+                    (Some(ty), None) => {
+                        // `impl Type { ... }`
+                        (Some(source[ty.byte_range()].to_string()), None)
+                    }
+                    _ => (None, None),
+                };
+
+                let mut chunk = Chunk::new(text, ChunkType::TypeDef, start_line, end_line)
+                    .with_language(language);
+                chunk.metadata = ChunkMetadata {
+                    type_name,
+                    trait_name,
+                    visibility: extract_visibility(source, &child),
+                    ..Default::default()
+                };
+                doc.add_chunk(chunk);
+            }
+
+            // Struct / class / interface / type definitions (non-impl)
             "struct_item"
             | "enum_item"
             | "type_item"
             | "trait_item"
-            | "impl_item"
             | "class_definition"
             | "class_declaration"
             | "interface_declaration"
@@ -102,11 +137,13 @@ fn extract_chunks(source: &str, node: tree_sitter::Node, language: &str, doc: &m
             | "type_spec" => {
                 let name =
                     find_child_by_field(&child, "name").map(|n| source[n.byte_range()].to_string());
+                let field_types = extract_field_types(source, &child);
 
                 let mut chunk = Chunk::new(text, ChunkType::TypeDef, start_line, end_line)
                     .with_language(language);
                 chunk.metadata = ChunkMetadata {
                     type_name: name,
+                    field_types,
                     visibility: extract_visibility(source, &child),
                     ..Default::default()
                 };
@@ -162,6 +199,84 @@ fn extract_visibility(source: &str, node: &tree_sitter::Node) -> Option<String> 
         }
     }
     None
+}
+
+/// Walk struct/class body and collect non-primitive field type names.
+/// Returns base type names with generics stripped (e.g., `Vec<String>` → `Vec`).
+fn extract_field_types(source: &str, node: &tree_sitter::Node) -> Vec<String> {
+    let mut types = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if matches!(
+            child.kind(),
+            "field_declaration_list" | "declaration_list" | "class_body"
+        ) {
+            let mut inner = child.walk();
+            for field in child.children(&mut inner) {
+                if matches!(
+                    field.kind(),
+                    "field_declaration" | "typed_parameter" | "public_field_definition"
+                ) {
+                    if let Some(type_node) = field.child_by_field_name("type") {
+                        let raw = source[type_node.byte_range()].trim().to_string();
+                        let base = raw
+                            .trim_start_matches('&')
+                            .trim_start_matches("mut ")
+                            .trim_start_matches("Option<")
+                            .trim_start_matches("Vec<")
+                            .trim_start_matches("Arc<")
+                            .trim_start_matches("Box<")
+                            .split('<')
+                            .next()
+                            .unwrap_or(&raw)
+                            .trim_end_matches('>')
+                            .trim()
+                            .to_string();
+                        if !base.is_empty() && !is_primitive_type(&base) {
+                            types.push(base);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    types
+}
+
+fn is_primitive_type(s: &str) -> bool {
+    matches!(
+        s,
+        "bool"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "f32"
+            | "f64"
+            | "char"
+            | "str"
+            | "String"
+            | "()"
+            | "Vec"
+            | "Option"
+            | "Arc"
+            | "Box"
+            | "HashMap"
+            | "BTreeMap"
+            | "HashSet"
+            | "BTreeSet"
+            | "Rc"
+            | "Cell"
+            | "RefCell"
+    )
 }
 
 #[cfg(test)]
