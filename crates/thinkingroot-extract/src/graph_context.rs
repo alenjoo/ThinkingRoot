@@ -153,6 +153,24 @@ mod tests {
     }
 
     #[test]
+    fn limits_to_max_relations() {
+        let relations: Vec<KnownRelation> = (0..500)
+            .map(|i| KnownRelation {
+                from: format!("Entity{i}"),
+                to: format!("Target{i}"),
+                relation_type: "uses".to_string(),
+            })
+            .collect();
+        let ctx = GraphPrimedContext {
+            entities: vec![KnownEntity { name: "Seed".to_string(), entity_type: "concept".to_string() }],
+            relations,
+        };
+        let section = ctx.prompt_section();
+        let rel_count = section.lines().filter(|l| l.starts_with("- Entity")).count();
+        assert_eq!(rel_count, MAX_KNOWN_RELATIONS);
+    }
+
+    #[test]
     fn known_relations_appear_in_prompt_section() {
         let ctx = GraphPrimedContext {
             entities: vec![

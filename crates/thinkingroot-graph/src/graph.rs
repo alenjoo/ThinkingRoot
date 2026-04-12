@@ -665,13 +665,12 @@ impl GraphStore {
         )?;
         Ok(result
             .rows
-            .iter()
-            .map(|row| {
-                (
-                    dv_to_string(&row[0]),
-                    dv_to_string(&row[1]),
-                    dv_to_string(&row[2]),
-                )
+            .into_iter()
+            .filter_map(|row| {
+                let from_name = row.first()?.get_str()?.to_string();
+                let to_name = row.get(1)?.get_str()?.to_string();
+                let rel_type = row.get(2)?.get_str()?.to_string();
+                Some((from_name, to_name, rel_type))
             })
             .collect())
     }
