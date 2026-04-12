@@ -55,7 +55,7 @@ pub struct ExtractionOutput {
     pub claim_source_quotes: HashMap<ClaimId, String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SourcedRelation {
     pub source: SourceId,
     pub relation: Relation,
