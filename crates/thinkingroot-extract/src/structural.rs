@@ -338,8 +338,6 @@ pub fn infer_entity_type_from_content(content: &str) -> &'static str {
         "concept"
     } else if lower.starts_with("trait ") || lower.starts_with("interface ") || lower.starts_with("protocol ") {
         "api"
-    } else if lower.starts_with("type ") || lower.starts_with("typedef ") {
-        "concept"
     } else {
         "concept"
     }

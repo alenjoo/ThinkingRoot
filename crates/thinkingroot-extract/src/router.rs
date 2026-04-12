@@ -25,6 +25,9 @@ pub enum Tier {
 /// - `FunctionDef` with a non-empty `function_name`  → [`Tier::Structural`]
 /// - `TypeDef`     with a non-empty `type_name`       → [`Tier::Structural`]
 /// - `Import`      with a non-empty `import_path`     → [`Tier::Structural`]
+/// - `ManifestDependency` always                      → [`Tier::Structural`]
+/// - `Heading`     always                             → [`Tier::Structural`]
+/// - `Prose` with `commit_author` or non-empty `links` → [`Tier::Structural`]
 /// - Everything else (including the above without required metadata) → [`Tier::Llm`]
 pub fn classify(chunk: &Chunk) -> Tier {
     match chunk.chunk_type {
@@ -49,7 +52,18 @@ pub fn classify(chunk: &Chunk) -> Tier {
                 Tier::Llm
             }
         }
-        // Prose, Code, Heading, List, Table, Comment, ModuleDoc → LLM
+        // ManifestDependency always carries type_name + import_path (set by manifest parser).
+        ChunkType::ManifestDependency => Tier::Structural,
+        // Heading always carries heading_level (set by markdown parser).
+        ChunkType::Heading => Tier::Structural,
+        // Git commit Prose (has commit_author) and link-bearing Prose are structurally extractable.
+        ChunkType::Prose => {
+            if chunk.metadata.commit_author.is_some() || !chunk.metadata.links.is_empty() {
+                Tier::Structural
+            } else {
+                Tier::Llm
+            }
+        }
         _ => Tier::Llm,
     }
 }
@@ -143,6 +157,48 @@ mod tests {
     #[test]
     fn code_chunk_is_llm() {
         let c = chunk(ChunkType::Code, ChunkMetadata::default());
+        assert_eq!(classify(&c), Tier::Llm);
+    }
+
+    #[test]
+    fn manifest_dependency_is_structural() {
+        let c = chunk(ChunkType::ManifestDependency, ChunkMetadata::default());
+        assert_eq!(classify(&c), Tier::Structural);
+    }
+
+    #[test]
+    fn heading_is_structural() {
+        let c = chunk(ChunkType::Heading, ChunkMetadata::default());
+        assert_eq!(classify(&c), Tier::Structural);
+    }
+
+    #[test]
+    fn prose_with_commit_author_is_structural() {
+        let c = chunk(
+            ChunkType::Prose,
+            ChunkMetadata {
+                commit_author: Some("Alice".to_string()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(classify(&c), Tier::Structural);
+    }
+
+    #[test]
+    fn prose_with_links_is_structural() {
+        let c = chunk(
+            ChunkType::Prose,
+            ChunkMetadata {
+                links: vec!["./foo.md".to_string()],
+                ..Default::default()
+            },
+        );
+        assert_eq!(classify(&c), Tier::Structural);
+    }
+
+    #[test]
+    fn prose_without_commit_author_or_links_is_llm() {
+        let c = chunk(ChunkType::Prose, ChunkMetadata::default());
         assert_eq!(classify(&c), Tier::Llm);
     }
 

@@ -1105,7 +1105,7 @@ fn repair_bare_array_items(s: &str) -> String {
                     }
                     out.push(']');
 
-                    i = i + close_rel; // advance past ']'
+                    i += close_rel; // advance past ']'
                     continue;
                 }
             }

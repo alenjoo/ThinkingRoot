@@ -157,7 +157,7 @@ impl Extractor {
                 // ── Tier Router: structural or LLM? ──
                 if crate::router::classify(chunk) == crate::router::Tier::Structural {
                     let result = crate::structural::extract_structural(chunk, &doc.uri);
-                    if !result.claims.is_empty() || !result.entities.is_empty() {
+                    if !result.claims.is_empty() || !result.entities.is_empty() || !result.relations.is_empty() {
                         structural_results.push((doc.source_id, doc.uri.clone(), result));
                         continue;
                     }
