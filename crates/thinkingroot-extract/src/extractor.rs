@@ -159,9 +159,10 @@ impl Extractor {
                     let result = crate::structural::extract_structural(chunk, &doc.uri);
                     if !result.claims.is_empty() || !result.entities.is_empty() || !result.relations.is_empty() {
                         structural_results.push((doc.source_id, doc.uri.clone(), result));
-                        continue;
+                        // No `continue` — chunk also queued for LLM below so both run additively.
+                        // Structural provides graph topology at 0.99 confidence;
+                        // LLM provides semantic meaning — they are complementary, not redundant.
                     }
-                    // Fallthrough to LLM if structural produced nothing
                 }
 
                 if let Some(ref cache) = self.cache {
@@ -196,9 +197,10 @@ impl Extractor {
             }
         }
 
-        // Total = structural + cache hits + original LLM chunks (progress denominator).
-        // Sub-chunk splits are an implementation detail — not exposed to callers.
-        let total_chunks = structural_results.len() + cache_hits_data.len() + llm_work.len();
+        // Total = number of original chunks across all documents.
+        // Each chunk fires one progress event from the LLM path (cache hit or LLM task).
+        // Structural results are additive — they run in addition to the LLM path, not instead.
+        let total_chunks = cache_hits_data.len() + llm_work.len();
         let mut done: usize = 0;
 
         // ── Process cache hits (instant, no LLM) ───────────────────────
@@ -215,21 +217,19 @@ impl Extractor {
         }
 
         // ── Process structural results (instant, no LLM) ─────────────
+        // Structural extraction is additive: the same chunks also run through the LLM
+        // path below. Progress events and chunks_processed are tracked there (once per
+        // original chunk). Here we only merge structural results and update the stat.
         let structural_count = structural_results.len();
-        for (source_id, source_uri, struct_result) in structural_results {
+        for (source_id, _source_uri, struct_result) in structural_results {
             // Use min_confidence=0.0 for structural — they're always 0.99, never filtered
             let converted = Self::convert_result_static(struct_result, source_id, workspace_id, 0.0);
             output.merge(converted);
-            output.chunks_processed += 1;
             output.structural_extractions += 1;
-            done += 1;
-            if let Some(ref pf) = self.progress {
-                pf(done, total_chunks, &source_uri);
-            }
         }
         if structural_count > 0 {
             tracing::info!(
-                "structural extraction: {} chunks processed (zero LLM calls)",
+                "structural extraction: {} chunks processed (additive with LLM, zero extra LLM calls)",
                 structural_count
             );
         }
