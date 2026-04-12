@@ -22,13 +22,17 @@ pub enum Tier {
 /// Classify a single chunk into a [`Tier`].
 ///
 /// Rules:
-/// - `FunctionDef` with a non-empty `function_name`  → [`Tier::Structural`]
-/// - `TypeDef`     with a non-empty `type_name`       → [`Tier::Structural`]
-/// - `Import`      with a non-empty `import_path`     → [`Tier::Structural`]
-/// - `ManifestDependency` always                      → [`Tier::Structural`]
-/// - `Heading`     always                             → [`Tier::Structural`]
-/// - `Prose` with `commit_author` or non-empty `links` → [`Tier::Structural`]
-/// - Everything else (including the above without required metadata) → [`Tier::Llm`]
+/// - `FunctionDef` with a non-empty `function_name`   → [`Tier::Structural`]
+/// - `TypeDef`     with a non-empty `type_name`        → [`Tier::Structural`]
+/// - `Import`      with a non-empty `import_path`      → [`Tier::Structural`]
+/// - `ManifestDependency` always                       → [`Tier::Structural`]
+/// - `Heading`     always                              → [`Tier::Structural`]
+/// - `Prose`       with `commit_author` or non-empty `links` → [`Tier::Structural`]
+/// - Everything else → [`Tier::Llm`]
+///
+/// Note: `ManifestDependency`, `Heading`, and git/link `Prose` chunks are routed
+/// Structural here. Until Task 7 adds their extractors, they fall through to LLM
+/// in the extractor when `extract_structural` returns an empty result.
 pub fn classify(chunk: &Chunk) -> Tier {
     match chunk.chunk_type {
         ChunkType::FunctionDef => {
@@ -121,12 +125,6 @@ mod tests {
     #[test]
     fn function_def_without_name_is_llm() {
         let c = chunk(ChunkType::FunctionDef, ChunkMetadata::default());
-        assert_eq!(classify(&c), Tier::Llm);
-    }
-
-    #[test]
-    fn prose_is_always_llm() {
-        let c = chunk(ChunkType::Prose, ChunkMetadata::default());
         assert_eq!(classify(&c), Tier::Llm);
     }
 

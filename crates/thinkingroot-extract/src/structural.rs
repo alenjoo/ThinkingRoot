@@ -14,6 +14,10 @@ use crate::schema::{ExtractedClaim, ExtractedEntity, ExtractedRelation, Extracti
 
 /// Returns `true` if this chunk can be handled by the structural extractor
 /// without any LLM calls.
+///
+/// Note: `ManifestDependency` and `Heading` are routed Structural by the router
+/// but not yet handled here — they will be added in the structural extractor
+/// expansion (Task 7). Until then, they fall through to LLM.
 pub fn is_structurally_extractable(chunk: &Chunk) -> bool {
     matches!(
         chunk.chunk_type,
