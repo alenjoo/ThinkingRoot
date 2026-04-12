@@ -248,6 +248,8 @@ impl GraphStore {
                     .into(),
             ),
         );
+        // NOTE: extraction_tier is intentionally not persisted yet.
+        // Schema column will be added in Task 8 (TEFS-GP).
 
         self.query(
             r#"?[id, statement, claim_type, source_id, confidence, sensitivity, workspace_id, created_at, grounding_score, grounding_method] <- [[
@@ -1067,6 +1069,8 @@ impl GraphStore {
             created_at,
             grounding_score: None,
             grounding_method: None,
+            // NOTE: extraction_tier is intentionally not persisted yet.
+            // Schema column will be added in Task 8 (TEFS-GP).
             extraction_tier: thinkingroot_core::types::ExtractionTier::default(),
         }))
     }

@@ -196,9 +196,11 @@ pub enum GroundingMethod {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtractionTier {
-    /// Deterministically extracted from document structure (AST/headings/metadata).
+    /// Tier 0: deterministic structural extraction (tree-sitter AST, imports, type defs).
+    /// Zero LLM calls. Zero hallucination. Confidence = 0.99.
     Structural,
-    /// Extracted by an LLM from chunk content.
+    /// Tier 2: LLM extraction with focused prompts and graph-primed context.
+    /// Uses API calls. Subject to grounding tribunal.
     #[default]
     Llm,
 }
@@ -246,5 +248,13 @@ mod tests {
             .with_grounding(0.92, GroundingMethod::Lexical);
         assert_eq!(claim.grounding_score, Some(0.92));
         assert_eq!(claim.grounding_method, Some(GroundingMethod::Lexical));
+    }
+
+    #[test]
+    fn claim_extraction_tier_defaults_to_llm() {
+        let ws = WorkspaceId::new();
+        let src = SourceId::new();
+        let claim = Claim::new("test", ClaimType::Fact, src, ws);
+        assert_eq!(claim.extraction_tier, ExtractionTier::Llm);
     }
 }
