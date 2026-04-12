@@ -161,14 +161,46 @@ pub async fn run_pipeline(
 
     // ─── Phase 2b: Ground extraction output ─────────────────────────────
     // The Grounding Tribunal verifies each claim against its source text.
+    // 4 judges: lexical, span, semantic (embeddings), NLI (entailment).
     // Claims that fail grounding (score < 0.25) are rejected before they
     // touch the database.
+    //
+    // NliJudge::load() uses hf-hub's sync API (reqwest::blocking) which must
+    // NOT be called from within an async context — it creates a nested Tokio
+    // runtime that deadlocks the worker thread. We use spawn_blocking to move
+    // it onto a dedicated blocking thread.
+    #[cfg(feature = "vector")]
+    let mut nli_judge = {
+        let data_dir_clone = data_dir.clone();
+        match tokio::task::spawn_blocking(move || {
+            thinkingroot_ground::NliJudge::load(Some(&data_dir_clone))
+        })
+        .await
+        {
+            Ok(Ok(judge)) => Some(judge),
+            Ok(Err(e)) => {
+                tracing::warn!("NLI model (Judge 4) unavailable, using Judges 1-3 only: {e}");
+                None
+            }
+            Err(e) => {
+                tracing::warn!("NLI model load task failed: {e}, using Judges 1-3 only");
+                None
+            }
+        }
+    };
+
     let extraction = if !extraction.claims.is_empty() {
         let grounder = thinkingroot_ground::Grounder::new(
             thinkingroot_ground::GroundingConfig::default(),
         );
         let pre_count = extraction.claims.len();
-        let mut grounded = grounder.ground(extraction);
+        let mut grounded = grounder.ground(
+            extraction,
+            #[cfg(feature = "vector")]
+            Some(&mut storage.vector),
+            #[cfg(feature = "vector")]
+            nli_judge.as_mut(),
+        );
         thinkingroot_ground::dedup::dedup_claims(&mut grounded.claims);
         let post_count = grounded.claims.len();
         if pre_count != post_count {
