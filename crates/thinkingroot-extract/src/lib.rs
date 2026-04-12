@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod extractor;
+pub mod focused_prompts;
 pub mod graph_context;
 pub mod llm;
 pub mod prompts;
