@@ -49,29 +49,87 @@ impl NliResult {
 // Model repository on HuggingFace (ONNX-exported DeBERTa-v3-base-mnli).
 const HF_REPO: &str = "cross-encoder/nli-deberta-v3-base";
 
+/// Resolve model files directly from the local HuggingFace cache without
+/// making any network calls. Returns `None` if the file is not cached.
+///
+/// hf_hub::api::sync always contacts the HuggingFace Hub to resolve the
+/// latest commit hash, even if the files are already cached. On a slow or
+/// firewalled network this blocks indefinitely. This function bypasses the
+/// API by reading `~/.cache/huggingface/hub/<model>/refs/main` for the
+/// commit hash, then resolving `snapshots/<hash>/<filename>` directly.
+fn find_in_local_cache(filename: &str) -> Option<std::path::PathBuf> {
+    // dir name: "models--{org}--{repo}" (slashes → double-dash)
+    let dir_name = format!("models--{}", HF_REPO.replace('/', "--"));
+
+    // Locate the HuggingFace cache root ($HF_HOME/hub, $HF_HUB_CACHE, or ~/.cache/huggingface/hub)
+    let cache_root = std::env::var("HF_HUB_CACHE")
+        .map(std::path::PathBuf::from)
+        .or_else(|_| {
+            std::env::var("HF_HOME")
+                .map(|h| std::path::PathBuf::from(h).join("hub"))
+        })
+        .or_else(|_| {
+            std::env::var("HOME")
+                .map(|h| std::path::PathBuf::from(h).join(".cache/huggingface/hub"))
+        })
+        .ok()?
+        .join(&dir_name);
+
+    // refs/main → commit hash
+    let commit = std::fs::read_to_string(cache_root.join("refs/main"))
+        .ok()?
+        .trim()
+        .to_string();
+
+    let snapshot_path = cache_root
+        .join("snapshots")
+        .join(&commit)
+        .join(filename);
+
+    // Resolve the symlink that hf_hub places here pointing to the actual blob
+    snapshot_path.canonicalize().ok().filter(|p| p.exists())
+}
+
 impl NliJudge {
     /// Load the NLI model. Downloads from HuggingFace on first use,
     /// then cached at `~/.cache/huggingface/hub/` (hf-hub default).
+    ///
+    /// Prefers the local cache to avoid a blocking network call — hf_hub's
+    /// sync API always contacts the Hub to resolve the latest commit hash,
+    /// which hangs indefinitely on slow/firewalled networks. Only falls back
+    /// to hf_hub (with download) when the model is not yet cached.
     pub fn load(_cache_dir: Option<&std::path::Path>) -> thinkingroot_core::Result<Self> {
-        tracing::info!("loading NLI model (DeBERTa-v3-base-mnli) — first run downloads ~64MB");
+        // Fast path: resolve from local cache without any network access.
+        let (onnx_path, tokenizer_path) = if let (Some(o), Some(t)) = (
+            find_in_local_cache("onnx/model.onnx"),
+            find_in_local_cache("tokenizer.json"),
+        ) {
+            tracing::info!("NLI model found in local cache — loading without network");
+            (o, t)
+        } else {
+            // Slow path: first run — download via hf_hub (~64 MB).
+            tracing::info!(
+                "NLI model not cached — downloading from HuggingFace (~64 MB, one-time)"
+            );
+            let api = hf_hub::api::sync::Api::new().map_err(|e| {
+                thinkingroot_core::Error::VectorStorage(format!("hf-hub init failed: {e}"))
+            })?;
+            let repo = api.model(HF_REPO.to_string());
 
-        // Download model files via hf-hub.
-        let api = hf_hub::api::sync::Api::new().map_err(|e| {
-            thinkingroot_core::Error::VectorStorage(format!("hf-hub init failed: {e}"))
-        })?;
-        let repo = api.model(HF_REPO.to_string());
+            let o = repo.get("onnx/model.onnx").map_err(|e| {
+                thinkingroot_core::Error::VectorStorage(format!(
+                    "failed to download NLI model from {HF_REPO}: {e}"
+                ))
+            })?;
 
-        let onnx_path = repo.get("onnx/model.onnx").map_err(|e| {
-            thinkingroot_core::Error::VectorStorage(format!(
-                "failed to download NLI model from {HF_REPO}: {e}"
-            ))
-        })?;
+            let t = repo.get("tokenizer.json").map_err(|e| {
+                thinkingroot_core::Error::VectorStorage(format!(
+                    "failed to download NLI tokenizer from {HF_REPO}: {e}"
+                ))
+            })?;
 
-        let tokenizer_path = repo.get("tokenizer.json").map_err(|e| {
-            thinkingroot_core::Error::VectorStorage(format!(
-                "failed to download NLI tokenizer from {HF_REPO}: {e}"
-            ))
-        })?;
+            (o, t)
+        };
 
         // Load tokenizer.
         let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path).map_err(|e| {
@@ -79,6 +137,7 @@ impl NliJudge {
         })?;
 
         // Load ONNX session.
+        // DeBERTa v3 uses disentangled attention — no token_type_ids in its ONNX export.
         let session = Session::builder()
             .map_err(|e| {
                 thinkingroot_core::Error::VectorStorage(format!(
@@ -251,5 +310,16 @@ mod tests {
         };
         // 0.1 - 0.5*0.8 = -0.3 → clamped to 0.0
         assert_eq!(r.score(), 0.0);
+    }
+
+    #[test]
+    fn find_in_local_cache_returns_none_for_missing() {
+        // A repo that definitely doesn't exist in cache
+        let result = std::env::var("HOME").ok().and_then(|h| {
+            let p = std::path::PathBuf::from(h)
+                .join(".cache/huggingface/hub/models--no-such--repo/refs/main");
+            if p.exists() { Some(()) } else { None }
+        });
+        assert!(result.is_none());
     }
 }
