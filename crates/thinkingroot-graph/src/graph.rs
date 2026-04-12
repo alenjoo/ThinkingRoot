@@ -22,6 +22,7 @@ impl GraphStore {
 
         let store = Self { db };
         store.create_schema()?;
+        store.migrate_claims_extraction_tier()?;
         Ok(store)
     }
 
@@ -51,7 +52,8 @@ impl GraphStore {
                 workspace_id: String default '',
                 created_at: Float default 0.0,
                 grounding_score: Float default -1.0,
-                grounding_method: String default ''
+                grounding_method: String default '',
+                extraction_tier: String default 'llm'
             }",
             ":create entities {
                 id: String
@@ -124,6 +126,42 @@ impl GraphStore {
 
         tracing::info!("graph schema initialized (cozo/datalog)");
         Ok(())
+    }
+
+    /// Migration: add extraction_tier column to claims if missing.
+    /// Uses `:replace` to redefine the relation with the new column,
+    /// defaulting existing rows to "llm".
+    fn migrate_claims_extraction_tier(&self) -> Result<()> {
+        let migration = r#"
+            {
+                ?[id, statement, claim_type, source_id, confidence, sensitivity, workspace_id, created_at, grounding_score, grounding_method, extraction_tier] :=
+                    *claims{id, statement, claim_type, source_id, confidence, sensitivity, workspace_id, created_at, grounding_score, grounding_method},
+                    extraction_tier = "llm"
+                :replace claims {id: String => statement: String, claim_type: String, source_id: String, confidence: Float, sensitivity: String, workspace_id: String, created_at: Float, grounding_score: Float, grounding_method: String, extraction_tier: String}
+            }
+        "#;
+
+        // Only run migration if schema already exists with old columns.
+        // If the :create already included extraction_tier (fresh DB), this is a no-op
+        // because the :replace will produce identical schema.
+        match self.db.run_default(migration) {
+            Ok(_) => {
+                tracing::debug!("claims extraction_tier migration applied (or already current)");
+                Ok(())
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                // If claims relation doesn't exist at all, that's fine — create_schema
+                // will have created it with the new column.
+                if msg.contains("not found") || msg.contains("does not exist") {
+                    Ok(())
+                } else {
+                    Err(Error::GraphStorage(format!(
+                        "claims extraction_tier migration failed: {msg}"
+                    )))
+                }
+            }
+        }
     }
 
     /// Run a Datalog query with parameters, returning NamedRows.
@@ -248,14 +286,17 @@ impl GraphStore {
                     .into(),
             ),
         );
-        // NOTE: extraction_tier is intentionally not persisted yet.
-        // Schema column will be added in Task 8 (TEFS-GP).
+        let tier_str = match claim.extraction_tier {
+            thinkingroot_core::types::ExtractionTier::Structural => "structural",
+            thinkingroot_core::types::ExtractionTier::Llm => "llm",
+        };
+        params.insert("extraction_tier".into(), DataValue::Str(tier_str.into()));
 
         self.query(
-            r#"?[id, statement, claim_type, source_id, confidence, sensitivity, workspace_id, created_at, grounding_score, grounding_method] <- [[
-                $id, $statement, $claim_type, $source_id, $confidence, $sensitivity, $workspace_id, $created_at, $grounding_score, $grounding_method
+            r#"?[id, statement, claim_type, source_id, confidence, sensitivity, workspace_id, created_at, grounding_score, grounding_method, extraction_tier] <- [[
+                $id, $statement, $claim_type, $source_id, $confidence, $sensitivity, $workspace_id, $created_at, $grounding_score, $grounding_method, $extraction_tier
             ]]
-            :put claims {id => statement, claim_type, source_id, confidence, sensitivity, workspace_id, created_at, grounding_score, grounding_method}"#,
+            :put claims {id => statement, claim_type, source_id, confidence, sensitivity, workspace_id, created_at, grounding_score, grounding_method, extraction_tier}"#,
             params,
         )?;
         Ok(())
@@ -1017,8 +1058,8 @@ impl GraphStore {
         params.insert("id".into(), DataValue::Str(id.into()));
 
         let result = self.db.run_script(
-            r#"?[statement, claim_type, source_id, confidence, sensitivity, workspace_id, created_at] :=
-                *claims{id: $id, statement, claim_type, source_id, confidence, sensitivity, workspace_id, created_at}"#,
+            r#"?[statement, claim_type, source_id, confidence, sensitivity, workspace_id, created_at, extraction_tier] :=
+                *claims{id: $id, statement, claim_type, source_id, confidence, sensitivity, workspace_id, created_at, extraction_tier}"#,
             params,
             ScriptMutability::Immutable,
         ).map_err(|e| Error::GraphStorage(format!("get_claim_by_id query failed: {e}")))?;
@@ -1086,9 +1127,10 @@ impl GraphStore {
             created_at,
             grounding_score: None,
             grounding_method: None,
-            // NOTE: extraction_tier is intentionally not persisted yet.
-            // Schema column will be added in Task 8 (TEFS-GP).
-            extraction_tier: thinkingroot_core::types::ExtractionTier::default(),
+            extraction_tier: match dv_to_string(&row[7]).as_str() {
+                "structural" => thinkingroot_core::types::ExtractionTier::Structural,
+                _ => thinkingroot_core::types::ExtractionTier::Llm,
+            },
         }))
     }
 
