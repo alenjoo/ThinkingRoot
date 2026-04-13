@@ -14,46 +14,68 @@ mod inner {
     /// Vector storage backed by fastembed for local neural embeddings.
     /// Stores embeddings in-memory with persistence to disk via JSON.
     /// Supports cosine similarity search for semantic queries.
+    ///
+    /// The ONNX model is loaded **lazily** on first use so that opening a
+    /// workspace (e.g. `root graph`) is instant — ONNX Runtime session
+    /// creation is slow even when the model file is already cached on disk.
     pub struct VectorStore {
-        model: TextEmbedding,
+        /// `None` until the first embed/search call; populated on demand.
+        model: Option<TextEmbedding>,
+        /// Stored so the model can be initialised lazily without re-scanning.
+        cache_dir: std::path::PathBuf,
         /// Map from ID → (embedding vector, metadata string).
         index: HashMap<String, (Vec<f32>, String)>,
         persist_path: std::path::PathBuf,
     }
 
     impl VectorStore {
-        /// Initialize the vector store with a local embedding model.
-        /// Downloads the model on first run (~30 MB), cached afterward.
+        /// Initialize the vector store.
+        ///
+        /// Fast path: only loads the on-disk index. The ONNX embedding model
+        /// is deferred until the first `upsert`, `search`, or `embed_texts`
+        /// call, keeping workspace open time under one second.
         pub async fn init(path: &Path) -> Result<Self> {
             let cache_dir = path.join("models");
             std::fs::create_dir_all(&cache_dir).map_err(|e| Error::io_path(&cache_dir, e))?;
-
-            let model = TextEmbedding::try_new(
-                InitOptions::new(EmbeddingModel::AllMiniLML6V2)
-                    .with_cache_dir(cache_dir)
-                    .with_show_download_progress(false),
-            )
-            .map_err(|e| Error::GraphStorage(format!("failed to init embedding model: {e}")))?;
 
             let persist_path = path.join("vectors.bin");
             let index = Self::load_index(&persist_path);
 
             tracing::info!(
-                "vector store initialized ({} existing embeddings)",
+                "vector store ready ({} cached embeddings, model deferred)",
                 index.len()
             );
 
             Ok(Self {
-                model,
+                model: None,
+                cache_dir,
                 index,
                 persist_path,
             })
         }
 
+        /// Ensure the ONNX model is loaded, initialising it on first call.
+        fn ensure_model(&mut self) -> Result<&mut TextEmbedding> {
+            if self.model.is_none() {
+                tracing::info!("loading embedding model (first use)…");
+                let model = TextEmbedding::try_new(
+                    InitOptions::new(EmbeddingModel::AllMiniLML6V2)
+                        .with_cache_dir(self.cache_dir.clone())
+                        .with_show_download_progress(false),
+                )
+                .map_err(|e| {
+                    Error::GraphStorage(format!("failed to init embedding model: {e}"))
+                })?;
+                self.model = Some(model);
+                tracing::info!("embedding model loaded");
+            }
+            Ok(self.model.as_mut().unwrap())
+        }
+
         /// Embed and store a text with an ID and metadata string.
         pub fn upsert(&mut self, id: &str, text: &str, metadata: &str) -> Result<()> {
             let embeddings = self
-                .model
+                .ensure_model()?
                 .embed(vec![text], None)
                 .map_err(|e| Error::GraphStorage(format!("embedding failed: {e}")))?;
 
@@ -76,7 +98,7 @@ mod inner {
             let texts: Vec<&str> = items.iter().map(|(_, text, _)| text.as_str()).collect();
 
             let embeddings = self
-                .model
+                .ensure_model()?
                 .embed(texts, None)
                 .map_err(|e| Error::GraphStorage(format!("batch embedding failed: {e}")))?;
 
@@ -97,7 +119,7 @@ mod inner {
             }
 
             let query_embedding = self
-                .model
+                .ensure_model()?
                 .embed(vec![query], None)
                 .map_err(|e| Error::GraphStorage(format!("query embedding failed: {e}")))?;
 
@@ -162,7 +184,7 @@ mod inner {
         /// Embed texts and return raw embedding vectors.
         /// Used by the grounding system's semantic judge.
         pub fn embed_texts(&mut self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-            self.model
+            self.ensure_model()?
                 .embed(texts.to_vec(), None)
                 .map_err(|e| Error::GraphStorage(format!("embedding failed: {e}")))
         }

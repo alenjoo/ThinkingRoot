@@ -10,6 +10,7 @@ mod branch_cmd;
 mod mcp_config;
 mod pipeline;
 mod progress;
+mod provider_cmd;
 mod serve;
 mod setup;
 mod watch;
@@ -212,6 +213,75 @@ enum Commands {
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
     },
+    /// Manage and switch LLM providers
+    Provider {
+        #[command(subcommand)]
+        action: Option<ProviderAction>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProviderAction {
+    /// List all available providers and show which is active (default)
+    List {
+        /// Workspace path to check for local overrides
+        #[arg(short, long, default_value = ".", value_name = "PATH")]
+        path: PathBuf,
+    },
+    /// Show active provider, model, and credential status
+    Status {
+        /// Workspace path to check for local overrides
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Switch to a different provider
+    Use {
+        /// Provider name: openrouter, openai, azure, anthropic, bedrock, ollama,
+        /// groq, together, deepseek, perplexity, litellm, custom
+        name: String,
+        /// Model ID (e.g. gpt-4o-mini). Prompted if not given.
+        #[arg(long)]
+        model: Option<String>,
+        /// API key value. Skips interactive prompt; sets the provider's env var
+        /// for this session. Ignored for bedrock and ollama.
+        #[arg(long, value_name = "KEY")]
+        key: Option<String>,
+        /// Base URL override for self-hosted or custom endpoints.
+        /// Required for the 'custom' provider.
+        #[arg(long, value_name = "URL")]
+        base_url: Option<String>,
+        /// Write to .thinkingroot/config.toml instead of the global config.
+        /// Overrides provider for this workspace only.
+        #[arg(long)]
+        local: bool,
+        /// Workspace path (used with --local)
+        #[arg(short, long, default_value = ".", value_name = "PATH")]
+        path: PathBuf,
+        /// Skip API key validation (useful in CI or offline environments)
+        #[arg(long)]
+        no_validate: bool,
+        /// Azure resource name — skips the interactive prompt (azure only)
+        #[arg(long, value_name = "NAME")]
+        azure_resource: Option<String>,
+        /// Azure deployment name — skips the interactive prompt (azure only)
+        #[arg(long, value_name = "DEPLOYMENT")]
+        azure_deployment: Option<String>,
+        /// Azure API version — skips the interactive prompt (azure only)
+        #[arg(long, value_name = "VERSION")]
+        azure_api_version: Option<String>,
+    },
+    /// Change the extraction model without changing the provider
+    #[command(name = "set-model")]
+    SetModel {
+        /// Model ID (e.g. gpt-4o, llama3, claude-3-haiku-20240307)
+        model: String,
+        /// Write to workspace config instead of global config
+        #[arg(long)]
+        local: bool,
+        /// Workspace path (used with --local)
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -340,6 +410,46 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Snapshot { name, path }) => {
             branch_cmd::handle_snapshot(&path, &name).await?;
         }
+        Some(Commands::Provider { action }) => match action {
+            None => {
+                provider_cmd::run_provider_list(Path::new(".")).await?;
+            }
+            Some(ProviderAction::List { path }) => {
+                provider_cmd::run_provider_list(&path).await?;
+            }
+            Some(ProviderAction::Status { path }) => {
+                provider_cmd::run_provider_status(&path).await?;
+            }
+            Some(ProviderAction::Use {
+                name,
+                model,
+                key,
+                base_url,
+                local,
+                path,
+                no_validate,
+                azure_resource,
+                azure_deployment,
+                azure_api_version,
+            }) => {
+                provider_cmd::run_provider_use(
+                    &name,
+                    model.as_deref(),
+                    key.as_deref(),
+                    base_url.as_deref(),
+                    local,
+                    &path,
+                    no_validate,
+                    azure_resource.as_deref(),
+                    azure_deployment.as_deref(),
+                    azure_api_version.as_deref(),
+                )
+                .await?;
+            }
+            Some(ProviderAction::SetModel { model, local, path }) => {
+                provider_cmd::run_provider_set_model(&model, local, &path)?;
+            }
+        },
         None => {
             // `root ./path` shorthand — same as `root compile ./path`.
             if let Some(path) = cli.path {
@@ -355,8 +465,15 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn run_compile(path: &PathBuf, branch: Option<&str>, use_progress: bool) -> anyhow::Result<()> {
+    if !path.exists() {
+        let name = path.display().to_string();
+        anyhow::bail!(
+            "Unknown command or path not found: '{}'\n\nRun 'root --help' to see available commands.",
+            style(name).yellow().bold()
+        );
+    }
     let path = std::fs::canonicalize(path)
-        .with_context(|| format!("path not found: {}", path.display()))?;
+        .with_context(|| format!("failed to canonicalize path: {}", path.display()))?;
 
     print_banner();
     println!(

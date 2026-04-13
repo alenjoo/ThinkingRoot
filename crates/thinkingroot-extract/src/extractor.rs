@@ -63,7 +63,7 @@ pub struct SourcedRelation {
 
 impl Extractor {
     pub async fn new(config: &Config) -> Result<Self> {
-        let scheduler = ThroughputScheduler::new();
+        let scheduler = ThroughputScheduler::new(config.llm.max_concurrent_requests);
         let llm = LlmClient::new(&config.llm)
             .await?
             .with_max_retries(config.extraction.max_retries)

@@ -10,16 +10,16 @@ use thinkingroot_core::config::{AzureConfig, BedrockConfig, LlmConfig, ProviderC
 
 // ── Provider catalogue ───────────────────────────────────────────
 
-struct ProviderDef {
-    label: &'static str,
-    id: &'static str,
-    default_env: &'static str,
-    base_url: Option<&'static str>,
-    default_models: &'static [&'static str],
-    validate_url: Option<&'static str>,
+pub(crate) struct ProviderDef {
+    pub(crate) label: &'static str,
+    pub(crate) id: &'static str,
+    pub(crate) default_env: &'static str,
+    pub(crate) base_url: Option<&'static str>,
+    pub(crate) default_models: &'static [&'static str],
+    pub(crate) validate_url: Option<&'static str>,
 }
 
-static PROVIDERS: &[ProviderDef] = &[
+pub(crate) static PROVIDERS: &[ProviderDef] = &[
     ProviderDef {
         label: "OpenRouter  (200+ models, one key — recommended)",
         id: "openrouter",
@@ -506,7 +506,7 @@ async fn configure_bedrock(
 }
 
 /// Returns true if AWS credentials are available (file or env).
-fn bedrock_credentials_found() -> bool {
+pub(crate) fn bedrock_credentials_found() -> bool {
     // Env var credentials
     if std::env::var("AWS_ACCESS_KEY_ID").is_ok() {
         return true;
@@ -603,7 +603,7 @@ async fn configure_azure(theme: &ColorfulTheme) -> anyhow::Result<ProviderSetup>
 
 /// Validate Azure AOAI credentials by sending a minimal 1-token inference request.
 /// Returns Ok if the credentials are accepted (HTTP 2xx or 5xx); Err on 401/403/404.
-async fn validate_azure(
+pub(crate) async fn validate_azure(
     resource: &str,
     deployment: &str,
     api_version: &str,
@@ -758,7 +758,7 @@ fn set_provider_config(llm: &mut LlmConfig, provider: &ProviderDef, setup: &Prov
 
 // ── Model selection helper ────────────────────────────────────────
 
-fn select_model_from_list(
+pub(crate) fn select_model_from_list(
     theme: &ColorfulTheme,
     default_models: &[&str],
 ) -> anyhow::Result<String> {
@@ -787,7 +787,7 @@ fn select_model_from_list(
 /// Validate an API key by GETting the provider's /models endpoint.
 /// Returns Ok(()) if the key is accepted (HTTP 2xx, 404, or 405 — key valid, endpoint may differ).
 /// Returns Err if HTTP 401/403 (bad key) or network error.
-async fn validate_key_http(url: &str, provider_id: &str, key: &str) -> anyhow::Result<()> {
+pub(crate) async fn validate_key_http(url: &str, provider_id: &str, key: &str) -> anyhow::Result<()> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()?;

@@ -874,9 +874,13 @@ impl LlmClient {
 
             // Gate every send through the throughput scheduler.
             // This is the pre-emptive layer — prevents 429s from ever occurring.
-            if let Some(ref sched) = self.scheduler {
-                sched.wait_for_slot().await;
-            }
+            // The ticket tracks in-flight count via RAII: Drop decrements automatically
+            // no matter which path (success, error, truncation) exits the match below.
+            let opt_ticket = if let Some(ref sched) = self.scheduler {
+                Some(sched.wait_for_slot().await)
+            } else {
+                None
+            };
 
             match self.provider.chat(prompts::SYSTEM_PROMPT, &user_prompt).await {
                 Ok(output) => {
@@ -894,8 +898,8 @@ impl LlmClient {
                         + user_prompt.len()
                         + output.text.len()) as u64
                         / 4;
-                    if let Some(ref sched) = self.scheduler {
-                        sched.record_success(tokens, &output.limits).await;
+                    if let (Some(sched), Some(ticket)) = (&self.scheduler, opt_ticket) {
+                        sched.record_success(tokens, &output.limits, ticket).await;
                     }
 
                     match parse_extraction_result(&output.text) {
@@ -920,9 +924,9 @@ impl LlmClient {
                     rl_attempts += 1;
 
                     // Safety net: scheduler should have prevented this, but providers
-                    // can be inconsistent. Double the send interval immediately.
-                    if let Some(ref sched) = self.scheduler {
-                        sched.record_throttle();
+                    // can be inconsistent. Double the send interval and halve concurrency.
+                    if let (Some(sched), Some(ticket)) = (&self.scheduler, opt_ticket) {
+                        sched.record_throttle(ticket);
                     }
 
                     // Get provider-suggested delay, or compute our own.

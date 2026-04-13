@@ -378,7 +378,7 @@ fn remove_claude_code_config(
 
 fn write_codex_config(
     tool: &DetectedTool,
-    port: u16,
+    _port: u16,
     dry_run: bool,
 ) -> anyhow::Result<WriteResult> {
     let path = &tool.config_path;
@@ -392,7 +392,16 @@ fn write_codex_config(
         toml::Value::Table(toml::map::Map::new())
     };
 
-    apply_codex_entry(&mut doc, port);
+    let bin_path = std::env::current_exe()
+        .unwrap_or_else(|_| std::path::PathBuf::from("root"))
+        .to_string_lossy()
+        .into_owned();
+    let workspace_path = std::env::current_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        .to_string_lossy()
+        .into_owned();
+
+    apply_codex_entry(&mut doc, &bin_path, &workspace_path);
     let toml_out = toml::to_string_pretty(&doc)
         .with_context(|| "failed to serialize TOML")?;
 
@@ -418,7 +427,7 @@ fn write_codex_config(
     })
 }
 
-pub fn apply_codex_entry(doc: &mut toml::Value, port: u16) {
+pub fn apply_codex_entry(doc: &mut toml::Value, bin_path: &str, workspace_path: &str) {
     let root = doc
         .as_table_mut()
         .expect("TOML root must be a table");
@@ -436,9 +445,15 @@ pub fn apply_codex_entry(doc: &mut toml::Value, port: u16) {
         .expect("mcp_servers must be a table");
 
     let mut entry = toml::map::Map::new();
+    entry.insert("command".to_string(), toml::Value::String(bin_path.to_string()));
     entry.insert(
-        "url".to_string(),
-        toml::Value::String(format!("http://localhost:{}/mcp/sse", port)),
+        "args".to_string(),
+        toml::Value::Array(vec![
+            toml::Value::String("serve".to_string()),
+            toml::Value::String("--mcp-stdio".to_string()),
+            toml::Value::String("--path".to_string()),
+            toml::Value::String(workspace_path.to_string()),
+        ]),
     );
     mcp_servers.insert("thinkingroot".to_string(), toml::Value::Table(entry));
 }
@@ -494,6 +509,23 @@ fn remove_codex_config(
     })
 }
 
+// ── Port helpers ─────────────────────────────────────────────────
+
+fn is_port_available(port: u16) -> bool {
+    std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+}
+
+/// Scan upward from `start` and return the first unoccupied port.
+fn find_available_port(start: u16) -> u16 {
+    (start..=start.saturating_add(100))
+        .find(|&p| is_port_available(p))
+        .unwrap_or(start)
+}
+
+fn is_stdio_tool(format: ConfigFormat) -> bool {
+    matches!(format, ConfigFormat::ClaudeCode | ConfigFormat::CodexToml)
+}
+
 // ── run_connect entry point ───────────────────────────────────────
 
 pub fn run_connect(
@@ -530,24 +562,45 @@ pub fn run_connect(
         None => all_tools.iter().collect(),
     };
 
+    // For SSE tools, check if the requested port is free and find one that is.
+    let has_sse_tools = tools_to_process.iter().any(|t| !is_stdio_tool(t.format));
+    let effective_port = if !remove && has_sse_tools && !is_port_available(port) {
+        let next = find_available_port(port + 1);
+        println!(
+            "  {} Port {} is in use — using {} instead\n",
+            style("!").yellow().bold(),
+            port,
+            style(next).cyan()
+        );
+        next
+    } else {
+        port
+    };
+
     if dry_run {
         println!("  {} (no files will be changed)\n", style("Dry run").yellow().bold());
     }
 
-    for tool in tools_to_process {
+    let mut sse_connected = false;
+    let mut stdio_connected = false;
+
+    for tool in &tools_to_process {
         let result = if remove {
             remove_tool_config(tool, dry_run)?
         } else {
-            write_tool_config(tool, port, dry_run)?
+            write_tool_config(tool, effective_port, dry_run)?
         };
 
         match &result.action {
-            WriteAction::Written => println!(
-                "  {} {:<20} → {}",
-                style("✓").green().bold(),
-                result.tool,
-                style(result.path.display()).dim()
-            ),
+            WriteAction::Written => {
+                println!(
+                    "  {} {:<20} → {}",
+                    style("✓").green().bold(),
+                    result.tool,
+                    style(result.path.display()).dim()
+                );
+                if is_stdio_tool(tool.format) { stdio_connected = true; } else { sse_connected = true; }
+            }
             WriteAction::DryRun(content) => {
                 println!(
                     "  {} {:<20} → {} (would write)",
@@ -573,10 +626,15 @@ pub fn run_connect(
 
     if !dry_run && !remove {
         println!();
-        println!(
-            "  All connected to {}",
-            style(format!("http://localhost:{}/mcp/sse", port)).cyan()
-        );
+        if sse_connected {
+            println!(
+                "  SSE tools connected to {}",
+                style(format!("http://localhost:{}/mcp/sse", effective_port)).cyan()
+            );
+        }
+        if stdio_connected {
+            println!("  Stdio tools (Codex, Claude Code) connected via subprocess.");
+        }
         println!("  Restart your AI tools to pick up the new config.");
     }
     println!();
@@ -693,13 +751,20 @@ command = "npx"
 args = ["@playwright/mcp@latest"]
 "#;
         let mut doc: toml::Value = input.parse().unwrap();
-        apply_codex_entry(&mut doc, 3000);
+        apply_codex_entry(&mut doc, "/usr/local/bin/root", "/workspace");
         let root = doc.as_table().unwrap();
         let mcp = root["mcp_servers"].as_table().unwrap();
         assert_eq!(
-            mcp["thinkingroot"]["url"].as_str().unwrap(),
-            "http://localhost:3000/mcp/sse"
+            mcp["thinkingroot"]["command"].as_str().unwrap(),
+            "/usr/local/bin/root"
         );
+        let args: Vec<&str> = mcp["thinkingroot"]["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(args, ["serve", "--mcp-stdio", "--path", "/workspace"]);
         // Existing server preserved.
         assert!(mcp["playwright"].is_table());
         // Top-level key preserved.
@@ -713,7 +778,8 @@ args = ["@playwright/mcp@latest"]
 command = "npx"
 
 [mcp_servers.thinkingroot]
-url = "http://localhost:3000/mcp/sse"
+command = "/usr/local/bin/root"
+args = ["serve", "--mcp-stdio", "--path", "/workspace"]
 "#;
         let mut doc: toml::Value = input.parse().unwrap();
         remove_codex_entry(&mut doc);
