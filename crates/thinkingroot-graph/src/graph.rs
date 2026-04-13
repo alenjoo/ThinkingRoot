@@ -24,6 +24,7 @@ impl GraphStore {
         let store = Self { db };
         store.create_schema()?;
         store.migrate_claims_extraction_tier()?;
+        store.create_indexes()?;
         Ok(store)
     }
 
@@ -126,6 +127,44 @@ impl GraphStore {
         }
 
         tracing::info!("graph schema initialized (cozo/datalog)");
+        Ok(())
+    }
+
+    /// Create secondary indexes for the most performance-sensitive query patterns.
+    ///
+    /// CozoDB relations are ordered only by their primary key by default. Any query
+    /// that filters on a non-PK-prefix field incurs a full table scan. These indexes
+    /// turn O(n) scans into O(log n + k) point-range lookups:
+    ///
+    /// - `claims:by_type`               — `get_claims_by_type` (was 521ms at Large)
+    /// - `claim_entity_edges:by_entity` — `get_claims_for_entity` (was 121ms at Large)
+    /// - `claim_source_edges:by_source` — claim removal during `remove_source_by_id`
+    /// - `entities:by_name`             — `get_relations_for_entity`, exact name lookups
+    ///
+    /// Idempotent: silently skips indexes that already exist (safe on re-init).
+    fn create_indexes(&self) -> Result<()> {
+        let indexes = [
+            "::index create claims:by_type { claim_type }",
+            "::index create claim_entity_edges:by_entity { entity_id }",
+            "::index create claim_source_edges:by_source { source_id }",
+            "::index create entities:by_name { canonical_name }",
+        ];
+
+        for stmt in &indexes {
+            match self.db.run_default(stmt) {
+                Ok(_) => {}
+                Err(e) => {
+                    let msg = e.to_string();
+                    if !msg.contains("already exists") && !msg.contains("already in use") {
+                        return Err(Error::GraphStorage(format!(
+                            "index creation failed: {msg}"
+                        )));
+                    }
+                }
+            }
+        }
+
+        tracing::debug!("graph secondary indexes ensured");
         Ok(())
     }
 
@@ -406,6 +445,32 @@ impl GraphStore {
             .rows
             .iter()
             .map(|row| dv_to_string(&row[0]))
+            .collect())
+    }
+
+    /// Bulk-load all entity aliases in one query — used by the in-memory cache loader.
+    /// Returns `(entity_id, alias)` pairs for every row in `entity_aliases`.
+    pub fn get_all_entity_aliases(&self) -> Result<Vec<(String, String)>> {
+        let result = self.query_read(
+            "?[entity_id, alias] := *entity_aliases{entity_id, alias}",
+        )?;
+        Ok(result
+            .rows
+            .iter()
+            .map(|row| (dv_to_string(&row[0]), dv_to_string(&row[1])))
+            .collect())
+    }
+
+    /// Bulk-load all claim→entity edges in one query — used by the in-memory cache loader.
+    /// Returns `(claim_id, entity_id)` pairs for every row in `claim_entity_edges`.
+    pub fn get_all_claim_entity_edges(&self) -> Result<Vec<(String, String)>> {
+        let result = self.query_read(
+            "?[claim_id, entity_id] := *claim_entity_edges{claim_id, entity_id}",
+        )?;
+        Ok(result
+            .rows
+            .iter()
+            .map(|row| (dv_to_string(&row[0]), dv_to_string(&row[1])))
             .collect())
     }
 
@@ -970,8 +1035,7 @@ impl GraphStore {
             .db
             .run_script(
                 r#"?[id, statement, source_id, confidence, uri] :=
-                    *claims{id, statement, claim_type, source_id, confidence},
-                    claim_type == $ctype,
+                    *claims{id, statement, claim_type: $ctype, source_id, confidence},
                     *claim_source_edges{claim_id: id, source_id: sid},
                     *sources{id: sid, uri}"#,
                 params,

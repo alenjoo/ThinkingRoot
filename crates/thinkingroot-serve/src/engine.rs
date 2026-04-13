@@ -3,9 +3,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 pub use crate::pipeline::PipelineResult;
+use crate::graph_cache::{CachedClaim, KnowledgeGraph};
 use thinkingroot_core::{Config, Error, Result};
 use thinkingroot_graph::StorageEngine;
 use thinkingroot_verify::Verifier;
@@ -127,7 +128,12 @@ pub struct ClaimFilter {
 struct WorkspaceHandle {
     name: String,
     root_path: PathBuf,
+    /// Write operations (pipeline, agent contribute) go through CozoDB.
     storage: Arc<Mutex<StorageEngine>>,
+    /// All read operations are served from this in-memory cache.
+    /// Multiple concurrent requests read simultaneously; compile/contribute
+    /// take an exclusive write lock to reload after mutating CozoDB.
+    cache: Arc<RwLock<KnowledgeGraph>>,
     config: Config,
 }
 
@@ -162,6 +168,23 @@ const ARTIFACT_TYPES: &[&str] = &[
 ];
 
 // ---------------------------------------------------------------------------
+// Pagination helper
+// ---------------------------------------------------------------------------
+
+fn apply_pagination<T>(vec: &mut Vec<T>, offset: Option<usize>, limit: Option<usize>) {
+    if let Some(off) = offset {
+        if off >= vec.len() {
+            vec.clear();
+        } else if off > 0 {
+            *vec = vec.split_off(off);
+        }
+    }
+    if let Some(lim) = limit {
+        vec.truncate(lim);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // QueryEngine
 // ---------------------------------------------------------------------------
 
@@ -183,8 +206,8 @@ impl QueryEngine {
         }
     }
 
-    /// Mount a workspace by name, opening the `.thinkingroot/` data directory
-    /// and loading the config and storage engine.
+    /// Mount a workspace by name, opening the `.thinkingroot/` data directory,
+    /// loading the config and storage engine, and warming the in-memory cache.
     pub async fn mount(&mut self, name: String, root_path: PathBuf) -> Result<()> {
         let data_dir = root_path.join(".thinkingroot");
         if !data_dir.exists() {
@@ -207,6 +230,7 @@ impl QueryEngine {
 
         let config = Config::load_merged(&root_path)?;
         let storage = StorageEngine::init(&data_dir).await?;
+        let cache = KnowledgeGraph::load_from_graph(&storage.graph)?;
 
         self.workspaces.insert(
             name.clone(),
@@ -214,6 +238,7 @@ impl QueryEngine {
                 name,
                 root_path,
                 storage: Arc::new(Mutex::new(storage)),
+                cache: Arc::new(RwLock::new(cache)),
                 config,
             },
         );
@@ -248,6 +273,7 @@ impl QueryEngine {
 
         let config = Config::load_merged(&root_path).unwrap_or_default();
         let storage = StorageEngine::init(&data_dir).await?;
+        let cache = KnowledgeGraph::load_from_graph(&storage.graph)?;
 
         self.workspaces.insert(
             name.clone(),
@@ -255,6 +281,7 @@ impl QueryEngine {
                 name,
                 root_path,
                 storage: Arc::new(Mutex::new(storage)),
+                cache: Arc::new(RwLock::new(cache)),
                 config,
             },
         );
@@ -271,11 +298,12 @@ impl QueryEngine {
     }
 
     /// List all currently mounted workspaces with summary counts.
+    /// Served from in-memory cache — O(1) per workspace.
     pub async fn list_workspaces(&self) -> Result<Vec<WorkspaceInfo>> {
         let mut result = Vec::with_capacity(self.workspaces.len());
         for handle in self.workspaces.values() {
-            let storage = handle.storage.lock().await;
-            let (source_count, claim_count, entity_count) = storage.graph.get_counts()?;
+            let cache = handle.cache.read().await;
+            let (source_count, claim_count, entity_count) = cache.counts();
             result.push(WorkspaceInfo {
                 name: handle.name.clone(),
                 path: handle.root_path.display().to_string(),
@@ -288,194 +316,145 @@ impl QueryEngine {
     }
 
     /// List all entities in a workspace.
+    /// Served from in-memory cache — O(n) where n = entity count, zero disk I/O.
     pub async fn list_entities(&self, ws: &str) -> Result<Vec<EntityInfo>> {
         let handle = self.get_workspace(ws)?;
-        let storage = handle.storage.lock().await;
+        let cache = handle.cache.read().await;
 
-        let entities = storage.graph.get_all_entities()?;
-        let mut result = Vec::with_capacity(entities.len());
-
-        for (id, name, entity_type) in &entities {
-            let claims = storage.graph.get_claims_for_entity(id)?;
-            result.push(EntityInfo {
-                id: id.clone(),
-                name: name.clone(),
-                entity_type: entity_type.clone(),
-                claim_count: claims.len(),
-            });
+        let mut result = Vec::with_capacity(cache.entity_count());
+        for id in cache.entities_ordered() {
+            if let Some(e) = cache.entity_by_id(id) {
+                result.push(EntityInfo {
+                    id: e.id.clone(),
+                    name: e.canonical_name.clone(),
+                    entity_type: e.entity_type.clone(),
+                    claim_count: cache.entity_claim_count(&e.id),
+                });
+            }
         }
 
         Ok(result)
     }
 
     /// Get detailed information about a single entity by name (case-insensitive).
+    /// Served from in-memory cache — O(1) name lookup + O(k) claim/relation fetches.
     pub async fn get_entity(&self, ws: &str, name: &str) -> Result<EntityDetail> {
         let handle = self.get_workspace(ws)?;
-        let storage = handle.storage.lock().await;
+        let cache = handle.cache.read().await;
 
-        let entities = storage.graph.get_all_entities()?;
-        let lower_name = name.to_lowercase();
-
-        let (entity_id, entity_name, entity_type) = entities
-            .iter()
-            .find(|(_, n, _)| n.to_lowercase() == lower_name)
+        let entity = cache
+            .find_entity_by_name(name)
             .ok_or_else(|| Error::EntityNotFound(name.to_string()))?;
 
-        // Get claims with source information.
-        let raw_claims = storage
-            .graph
-            .get_claims_with_sources_for_entity(entity_id)?;
-
-        let claims: Vec<ClaimInfo> = raw_claims
+        let claims: Vec<ClaimInfo> = cache
+            .claims_for_entity(&entity.id)
             .into_iter()
-            .map(
-                |(id, statement, claim_type, source_uri, confidence)| ClaimInfo {
-                    id,
-                    statement,
-                    claim_type,
-                    confidence,
-                    source_uri,
-                },
-            )
+            .map(cached_claim_to_info)
             .collect();
 
-        // Get aliases.
-        let aliases = storage.graph.get_aliases_for_entity(entity_id)?;
-
-        // Get relations.
-        let raw_relations = storage.graph.get_relations_for_entity(entity_name)?;
-        let relations: Vec<RelationInfo> = raw_relations
+        let relations: Vec<RelationInfo> = cache
+            .relations_for_entity(&entity.canonical_name)
             .into_iter()
-            .map(|(target, relation_type, strength)| RelationInfo {
-                target,
-                relation_type,
-                strength,
+            .map(|r| RelationInfo {
+                target: r.to_name.clone(),
+                relation_type: r.relation_type.clone(),
+                strength: r.strength,
             })
             .collect();
 
         Ok(EntityDetail {
-            id: entity_id.clone(),
-            name: entity_name.clone(),
-            entity_type: entity_type.clone(),
-            aliases,
+            id: entity.id.clone(),
+            name: entity.canonical_name.clone(),
+            entity_type: entity.entity_type.clone(),
+            aliases: entity.aliases.clone(),
             claims,
             relations,
         })
     }
 
-    /// List claims with optional filtering by type, min confidence, limit, and offset.
+    /// List claims with optional filtering by type, entity, min confidence, limit, offset.
+    /// Served from in-memory cache.
     pub async fn list_claims(&self, ws: &str, filter: ClaimFilter) -> Result<Vec<ClaimInfo>> {
         let handle = self.get_workspace(ws)?;
-        let storage = handle.storage.lock().await;
+        let cache = handle.cache.read().await;
 
-        // If filtering by entity name, find the entity first.
+        // Entity-scoped path: O(1) name lookup + O(k) claim scan.
         if let Some(ref entity_name) = filter.entity_name {
-            let entities = storage.graph.get_all_entities()?;
-            let lower_name = entity_name.to_lowercase();
-            let entity = entities
-                .iter()
-                .find(|(_, n, _)| n.to_lowercase() == lower_name);
+            let entity = match cache.find_entity_by_name(entity_name) {
+                Some(e) => e,
+                None => return Ok(Vec::new()),
+            };
 
-            if let Some((entity_id, _, _)) = entity {
-                let raw = storage
-                    .graph
-                    .get_claims_with_sources_for_entity(entity_id)?;
+            let mut claims: Vec<ClaimInfo> = cache
+                .claims_for_entity(&entity.id)
+                .into_iter()
+                .filter(|c| {
+                    let type_ok = filter
+                        .claim_type
+                        .as_ref()
+                        .is_none_or(|t| t.eq_ignore_ascii_case(&c.claim_type));
+                    let conf_ok =
+                        filter.min_confidence.is_none_or(|min| c.confidence >= min);
+                    type_ok && conf_ok
+                })
+                .map(cached_claim_to_info)
+                .collect();
 
-                let mut claims: Vec<ClaimInfo> = raw
-                    .into_iter()
-                    .filter(|(_, _, ct, _, conf)| {
-                        let type_ok = filter
-                            .claim_type
-                            .as_ref()
-                            .is_none_or(|t| t.eq_ignore_ascii_case(ct));
-                        let conf_ok = filter.min_confidence.is_none_or(|min| *conf >= min);
-                        type_ok && conf_ok
-                    })
-                    .map(
-                        |(id, statement, claim_type, source_uri, confidence)| ClaimInfo {
-                            id,
-                            statement,
-                            claim_type,
-                            confidence,
-                            source_uri,
-                        },
-                    )
-                    .collect();
-
-                let offset = filter.offset.unwrap_or(0);
-                if offset > 0 && offset < claims.len() {
-                    claims = claims.split_off(offset);
-                } else if offset >= claims.len() {
-                    claims.clear();
-                }
-                if let Some(limit) = filter.limit {
-                    claims.truncate(limit);
-                }
-                return Ok(claims);
-            } else {
-                return Ok(Vec::new());
-            }
+            apply_pagination(&mut claims, filter.offset, filter.limit);
+            return Ok(claims);
         }
 
-        // No entity filter — use type-based or full listing.
-        let raw = if let Some(ref claim_type) = filter.claim_type {
-            storage.graph.get_claims_by_type(claim_type)?
+        // Type-filtered or full-listing path.
+        let raw: Vec<&CachedClaim> = if let Some(ref ct) = filter.claim_type {
+            cache.claims_of_type(ct)
         } else {
-            storage.graph.get_all_claims_with_sources()?
+            cache.all_claims().collect()
         };
 
         let mut claims: Vec<ClaimInfo> = raw
             .into_iter()
-            .filter(|(_, _, _, conf, _)| filter.min_confidence.is_none_or(|min| *conf >= min))
-            .map(
-                |(id, statement, claim_type, confidence, source_uri)| ClaimInfo {
-                    id,
-                    statement,
-                    claim_type,
-                    confidence,
-                    source_uri,
-                },
-            )
+            .filter(|c| filter.min_confidence.is_none_or(|min| c.confidence >= min))
+            .map(cached_claim_to_info)
             .collect();
 
-        let offset = filter.offset.unwrap_or(0);
-        if offset > 0 && offset < claims.len() {
-            claims = claims.split_off(offset);
-        } else if offset >= claims.len() {
-            claims.clear();
-        }
-        if let Some(limit) = filter.limit {
-            claims.truncate(limit);
-        }
-
+        apply_pagination(&mut claims, filter.offset, filter.limit);
         Ok(claims)
     }
 
     /// Get relations for a specific entity by name.
+    /// Served from in-memory cache — O(k).
     pub async fn get_relations(&self, ws: &str, entity: &str) -> Result<Vec<RelationInfo>> {
         let handle = self.get_workspace(ws)?;
-        let storage = handle.storage.lock().await;
+        let cache = handle.cache.read().await;
 
-        let raw = storage.graph.get_relations_for_entity(entity)?;
-        Ok(raw
+        Ok(cache
+            .relations_for_entity(entity)
             .into_iter()
-            .map(|(target, relation_type, strength)| RelationInfo {
-                target,
-                relation_type,
-                strength,
+            .map(|r| RelationInfo {
+                target: r.to_name.clone(),
+                relation_type: r.relation_type.clone(),
+                strength: r.strength,
             })
             .collect())
     }
 
     /// Get all relations in the workspace as (from, to, relation_type, strength) tuples.
+    /// Served from in-memory cache — O(n) over pre-built Vec, zero disk I/O.
     pub async fn get_all_relations(&self, ws: &str) -> Result<Vec<(String, String, String, f64)>> {
         let handle = self.get_workspace(ws)?;
-        let storage = handle.storage.lock().await;
+        let cache = handle.cache.read().await;
 
-        let raw = storage.graph.get_all_relations()?;
-        Ok(raw
-            .into_iter()
-            .map(|(from, to, rtype, _from_type, _to_type, strength)| (from, to, rtype, strength))
+        Ok(cache
+            .all_relations()
+            .iter()
+            .map(|r| {
+                (
+                    r.from_name.clone(),
+                    r.to_name.clone(),
+                    r.relation_type.clone(),
+                    r.strength,
+                )
+            })
             .collect())
     }
 
@@ -501,18 +480,18 @@ impl QueryEngine {
     }
 
     /// List all sources in the workspace.
+    /// Served from in-memory cache.
     pub async fn list_sources(&self, ws: &str) -> Result<Vec<SourceInfo>> {
         let handle = self.get_workspace(ws)?;
-        let storage = handle.storage.lock().await;
+        let cache = handle.cache.read().await;
 
-        Ok(storage
-            .graph
-            .get_all_sources()?
-            .into_iter()
-            .map(|(id, uri, source_type)| SourceInfo {
-                id,
-                uri,
-                source_type,
+        Ok(cache
+            .all_sources()
+            .iter()
+            .map(|s| SourceInfo {
+                id: s.id.clone(),
+                uri: s.uri.clone(),
+                source_type: s.source_type.clone(),
             })
             .collect())
     }
@@ -581,6 +560,7 @@ impl QueryEngine {
     }
 
     /// Run health/verification checks on the workspace.
+    /// Reads directly from CozoDB — verification needs full consistency checks.
     pub async fn health(&self, ws: &str) -> Result<VerificationResult> {
         let handle = self.get_workspace(ws)?;
         let storage = handle.storage.lock().await;
@@ -588,85 +568,112 @@ impl QueryEngine {
         verifier.verify(&storage.graph)
     }
 
-    /// Run the full pipeline for a mounted workspace.
+    /// Run the full pipeline for a mounted workspace, then reload the in-memory cache.
     pub async fn compile(&self, ws: &str) -> Result<PipelineResult> {
         let handle = self.get_workspace(ws)?;
-        crate::pipeline::run_pipeline(&handle.root_path, None, None).await
+        let result = crate::pipeline::run_pipeline(&handle.root_path, None, None).await?;
+
+        // Reload cache from CozoDB now that the pipeline has written new data.
+        // Acquire storage lock first, then cache write lock (consistent ordering
+        // prevents deadlock with the search method which never holds both).
+        let storage = handle.storage.lock().await;
+        match KnowledgeGraph::load_from_graph(&storage.graph) {
+            Ok(new_cache) => {
+                *handle.cache.write().await = new_cache;
+            }
+            Err(e) => {
+                tracing::warn!("cache reload after compile failed (non-fatal): {e}");
+            }
+        }
+
+        Ok(result)
     }
 
     /// Search the workspace using vector similarity + keyword fallback.
+    ///
+    /// Vector search still goes to VectorStore (fastembed).
+    /// Entity/claim lookups and claim counts are served from the in-memory cache
+    /// — eliminating the N+1 CozoDB queries the old implementation required.
     pub async fn search(&self, ws: &str, query: &str, top_k: usize) -> Result<SearchResult> {
         let handle = self.get_workspace(ws)?;
-        let mut storage = handle.storage.lock().await;
+
+        // Phase 1: Vector search — brief storage lock, released immediately after.
+        let vector_results = {
+            let mut storage = handle.storage.lock().await;
+            storage.vector.search(query, top_k * 2)?
+            // storage Mutex drops here
+        };
 
         let mut entity_hits: Vec<EntitySearchHit> = Vec::new();
         let mut claim_hits: Vec<ClaimSearchHit> = Vec::new();
         let mut seen_entity_ids: HashSet<String> = HashSet::new();
         let mut seen_claim_ids: HashSet<String> = HashSet::new();
 
-        // 1) Try vector search first.
-        let vector_results = storage.vector.search(query, top_k * 2)?;
+        // Phase 2: Resolve vector hits from cache — O(1) per hit, no disk I/O.
+        {
+            let cache = handle.cache.read().await;
 
-        // Hoist lookups outside the loop to avoid O(n) graph queries per result.
-        let all_entities = storage.graph.get_all_entities()?;
-        let all_claims = storage.graph.get_all_claims_with_sources()?;
+            for (key, _metadata, score) in &vector_results {
+                if *score < 0.1 {
+                    continue;
+                }
 
-        for (key, _metadata, score) in &vector_results {
-            if *score < 0.1 {
-                continue;
+                if let Some(bare_id) = key.strip_prefix("entity:")
+                    && let Some(e) = cache.entity_by_id(bare_id)
+                    && seen_entity_ids.insert(e.id.clone())
+                {
+                    entity_hits.push(EntitySearchHit {
+                        id: e.id.clone(),
+                        name: e.canonical_name.clone(),
+                        entity_type: e.entity_type.clone(),
+                        claim_count: cache.entity_claim_count(&e.id),
+                        relevance: *score,
+                    });
+                    continue;
+                }
+
+                if let Some(bare_id) = key.strip_prefix("claim:")
+                    && let Some(c) = cache.claim_by_id(bare_id)
+                    && seen_claim_ids.insert(c.id.clone())
+                {
+                    claim_hits.push(ClaimSearchHit {
+                        id: c.id.clone(),
+                        statement: c.statement.clone(),
+                        claim_type: c.claim_type.clone(),
+                        confidence: c.confidence,
+                        source_uri: c.source_uri.clone(),
+                        relevance: *score,
+                    });
+                }
             }
-
-            // Vector keys are stored with type prefixes ("entity:{id}", "claim:{id}").
-            // Strip the prefix to get the bare graph ID for lookup.
-            if let Some(bare_id) = key.strip_prefix("entity:")
-                && let Some((eid, ename, etype)) =
-                    all_entities.iter().find(|(eid, _, _)| eid == bare_id)
-                && seen_entity_ids.insert(eid.clone())
-            {
-                let claims = storage.graph.get_claims_for_entity(eid)?;
-                entity_hits.push(EntitySearchHit {
-                    id: eid.clone(),
-                    name: ename.clone(),
-                    entity_type: etype.clone(),
-                    claim_count: claims.len(),
-                    relevance: *score,
-                });
-                continue;
-            }
-
-            if let Some(bare_id) = key.strip_prefix("claim:")
-                && let Some((cid, stmt, ctype, conf, uri)) =
-                    all_claims.iter().find(|(cid, _, _, _, _)| cid == bare_id)
-                && seen_claim_ids.insert(cid.clone())
-            {
-                claim_hits.push(ClaimSearchHit {
-                    id: cid.clone(),
-                    statement: stmt.clone(),
-                    claim_type: ctype.clone(),
-                    confidence: *conf,
-                    source_uri: uri.clone(),
-                    relevance: *score,
-                });
-            }
+            // cache read lock drops here — must release before acquiring storage lock below
         }
 
-        // 2) Keyword fallback if vector didn't return enough.
+        // Phase 3: Keyword fallback if vector didn't return enough.
+        // Storage lock acquired separately (never held simultaneously with cache lock).
         if entity_hits.len() + claim_hits.len() < top_k {
-            let kw_entities = storage.graph.search_entities(query)?;
+            let (kw_entities, kw_claims) = {
+                let storage = handle.storage.lock().await;
+                let ents = storage.graph.search_entities(query)?;
+                let cls = storage.graph.search_claims(query)?;
+                (ents, cls)
+                // storage Mutex drops here
+            };
+
+            let cache = handle.cache.read().await;
+
             for (eid, ename, etype) in kw_entities {
                 if seen_entity_ids.insert(eid.clone()) {
-                    let claims = storage.graph.get_claims_for_entity(&eid)?;
                     entity_hits.push(EntitySearchHit {
+                        claim_count: cache.entity_claim_count(&eid),
                         id: eid,
                         name: ename,
                         entity_type: etype,
-                        claim_count: claims.len(),
-                        relevance: 0.5, // default relevance for keyword matches
+                        relevance: 0.5,
                     });
                 }
             }
 
-            let kw_claims = storage.graph.search_claims(query)?;
             for (cid, stmt, ctype, conf, uri) in kw_claims {
                 if seen_claim_ids.insert(cid.clone()) {
                     claim_hits.push(ClaimSearchHit {
@@ -679,6 +686,7 @@ impl QueryEngine {
                     });
                 }
             }
+            // cache read lock drops here
         }
 
         // Sort by descending relevance and truncate.
@@ -702,23 +710,21 @@ impl QueryEngine {
     }
 
     /// List tracked contradictions in the workspace.
+    /// Served from in-memory cache.
     pub async fn list_contradictions(&self, ws: &str) -> Result<Vec<ContradictionInfo>> {
         let handle = self.get_workspace(ws)?;
-        let storage = handle.storage.lock().await;
+        let cache = handle.cache.read().await;
 
-        Ok(storage
-            .graph
-            .get_contradictions()?
-            .into_iter()
-            .map(
-                |(id, claim_a, claim_b, explanation, status)| ContradictionInfo {
-                    id,
-                    claim_a,
-                    claim_b,
-                    explanation,
-                    status,
-                },
-            )
+        Ok(cache
+            .all_contradictions()
+            .iter()
+            .map(|c| ContradictionInfo {
+                id: c.id.clone(),
+                claim_a: c.claim_a.clone(),
+                claim_b: c.claim_b.clone(),
+                explanation: c.explanation.clone(),
+                status: c.status.clone(),
+            })
             .collect())
     }
 
@@ -728,27 +734,25 @@ impl QueryEngine {
     }
 
     /// Return a token-efficient workspace overview for agent orientation.
-    ///
-    /// Assembles entity counts, top entities by claim count, recent decisions,
-    /// and active contradictions — all in one lock acquisition.
+    /// Served entirely from in-memory cache — zero disk I/O.
     pub async fn get_workspace_brief(&self, ws: &str) -> Result<WorkspaceSummary> {
         let handle = self.get_workspace(ws)?;
-        let storage = handle.storage.lock().await;
+        let cache = handle.cache.read().await;
 
-        let (source_count, claim_count, entity_count) = storage.graph.get_counts()?;
-        let top_entities = storage.graph.get_top_entities_by_claim_count(10)?;
+        let (source_count, claim_count, entity_count) = cache.counts();
+        let top_entities = cache.top_entities_by_claim_count(10);
 
-        let raw_decisions = storage.graph.get_claims_by_type("Decision")?;
-        let recent_decisions: Vec<(String, f64)> = raw_decisions
+        let recent_decisions: Vec<(String, f64)> = cache
+            .claims_of_type("Decision")
             .into_iter()
             .take(10)
-            .map(|(_, stmt, _, conf, _)| (stmt, conf))
+            .map(|c| (c.statement.clone(), c.confidence))
             .collect();
 
-        let contradictions = storage.graph.get_contradictions()?;
-        let contradiction_count = contradictions
+        let contradiction_count = cache
+            .all_contradictions()
             .iter()
-            .filter(|(_, _, _, _, status)| status == "Detected")
+            .filter(|c| c.status == "Detected")
             .count();
 
         Ok(WorkspaceSummary {
@@ -764,9 +768,9 @@ impl QueryEngine {
 
     /// Return full graph context for a named entity.
     ///
-    /// Executes 6 Datalog queries: entity metadata, outgoing/incoming relations,
-    /// claims with source provenance, and contradictions (both directions).
-    /// Returns `None` when no entity with that exact or aliased name exists.
+    /// This executes 6 Datalog queries directly against CozoDB (incoming relations,
+    /// per-entity contradictions). It is kept on CozoDB for correctness; Phase C
+    /// will add a full entity-context cache.
     pub async fn get_entity_context(
         &self,
         ws: &str,
@@ -784,6 +788,7 @@ impl QueryEngine {
     /// promote, supersede, or reject them based on grounding results.
     ///
     /// A synthetic source `mcp://agent/{session_id}` is created to anchor provenance.
+    /// The in-memory cache is reloaded after writing so subsequent reads see new claims.
     pub async fn contribute_claims(
         &self,
         ws: &str,
@@ -813,9 +818,7 @@ impl QueryEngine {
             .with_trust(TrustLevel::Untrusted)
             .with_hash(ContentHash(format!("{session_id}-{ts}")));
 
-        // When the session has an active branch, open that branch's GraphStore
-        // directly — same pattern as diff_branch / merge_branch. The main
-        // workspace storage is left untouched until the agent merges.
+        // Branch path: writes go to the branch graph only; main cache unchanged.
         if let Some(branch_name) = branch {
             let branch_data_dir = resolve_data_dir(&handle.root_path, Some(branch_name));
             if !branch_data_dir.exists() {
@@ -835,10 +838,25 @@ impl QueryEngine {
             });
         }
 
-        // No active branch — write directly to main.
-        let storage = handle.storage.lock().await;
-        let (accepted_ids, warnings) =
-            Self::write_agent_claims_to_graph(&storage.graph, &source, &agent_claims)?;
+        // No active branch — write to main graph, then reload cache.
+        let accepted_ids;
+        let warnings;
+        {
+            let storage = handle.storage.lock().await;
+            (accepted_ids, warnings) =
+                Self::write_agent_claims_to_graph(&storage.graph, &source, &agent_claims)?;
+
+            // Reload while still holding storage lock so no concurrent write
+            // can slip in between the CozoDB write and the cache update.
+            match KnowledgeGraph::load_from_graph(&storage.graph) {
+                Ok(new_cache) => {
+                    *handle.cache.write().await = new_cache;
+                }
+                Err(e) => {
+                    tracing::warn!("cache reload after contribute failed (non-fatal): {e}");
+                }
+            }
+        }
 
         Ok(ContributeResult {
             accepted_count: accepted_ids.len(),
@@ -957,5 +975,19 @@ fn parse_claim_type_str(s: &str) -> thinkingroot_core::types::ClaimType {
         "api_signature" | "apisignature" => ClaimType::ApiSignature,
         "architecture" => ClaimType::Architecture,
         _ => ClaimType::Fact,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Private helpers
+// ---------------------------------------------------------------------------
+
+fn cached_claim_to_info(c: &CachedClaim) -> ClaimInfo {
+    ClaimInfo {
+        id: c.id.clone(),
+        statement: c.statement.clone(),
+        claim_type: c.claim_type.clone(),
+        confidence: c.confidence,
+        source_uri: c.source_uri.clone(),
     }
 }

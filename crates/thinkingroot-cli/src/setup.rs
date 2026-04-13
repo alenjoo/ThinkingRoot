@@ -433,15 +433,15 @@ async fn run_setup_update(theme: &ColorfulTheme) -> anyhow::Result<()> {
             crate::mcp_config::run_connect(None, port, false, false)?;
         }
         3 => {
-            if let Some(p) = GlobalConfig::path() {
-                if p.exists() {
-                    std::fs::remove_file(&p)?;
-                }
+            if let Some(p) = GlobalConfig::path()
+                && p.exists()
+            {
+                std::fs::remove_file(&p)?;
             }
-            if let Some(p) = WorkspaceRegistry::path() {
-                if p.exists() {
-                    std::fs::remove_file(&p)?;
-                }
+            if let Some(p) = WorkspaceRegistry::path()
+                && p.exists()
+            {
+                std::fs::remove_file(&p)?;
             }
             Box::pin(run_setup()).await?;
         }

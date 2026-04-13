@@ -616,17 +616,17 @@ async fn collect_generic(
     };
 
     // ── Validate key ──────────────────────────────────────────────
-    if !no_validate && !api_key.is_empty() {
-        if let Some(validate_url) = pdef.validate_url {
-            let pb = spinner("Validating key...");
-            match validate_key_http(validate_url, pdef.id, &api_key).await {
-                Ok(()) => pb.finish_with_message(format!("{} Key valid", style("✓").green())),
-                Err(e) => {
-                    pb.finish_with_message(format!("{} Validation failed", style("✗").red()));
-                    anyhow::bail!(
-                        "Key validation failed: {e}\nCheck your key or use --no-validate to skip."
-                    );
-                }
+    if !no_validate && !api_key.is_empty()
+        && let Some(validate_url) = pdef.validate_url
+    {
+        let pb = spinner("Validating key...");
+        match validate_key_http(validate_url, pdef.id, &api_key).await {
+            Ok(()) => pb.finish_with_message(format!("{} Key valid", style("✓").green())),
+            Err(e) => {
+                pb.finish_with_message(format!("{} Validation failed", style("✗").red()));
+                anyhow::bail!(
+                    "Key validation failed: {e}\nCheck your key or use --no-validate to skip."
+                );
             }
         }
     }

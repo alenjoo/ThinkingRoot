@@ -88,13 +88,13 @@ pub async fn run_compile_progress(
 
                     // ── Extraction ──────────────────────────────────────
                     ProgressEvent::ExtractionStart { total_chunks } => {
-                        if let Some(ref eb) = extract_bar {
-                            if total_chunks > 0 {
-                                eb.set_length(total_chunks as u64);
-                                eb.set_position(0);
-                                eb.set_style(active_bar_style());
-                                eb.enable_steady_tick(std::time::Duration::from_millis(80));
-                            }
+                        if let Some(ref eb) = extract_bar
+                            && total_chunks > 0
+                        {
+                            eb.set_length(total_chunks as u64);
+                            eb.set_position(0);
+                            eb.set_style(active_bar_style());
+                            eb.enable_steady_tick(std::time::Duration::from_millis(80));
                         }
                     }
 
@@ -220,10 +220,10 @@ pub async fn run_compile_progress(
 
                     // ── Linking ─────────────────────────────────────────
                     ProgressEvent::LinkingStart { total_entities } => {
-                        if let Some(ref lb) = link_bar {
-                            if total_entities > 0 {
-                                lb.set_message(format!("0/{total_entities} entities"));
-                            }
+                        if let Some(ref lb) = link_bar
+                            && total_entities > 0
+                        {
+                            lb.set_message(format!("0/{total_entities} entities"));
                         }
                     }
 
