@@ -96,7 +96,8 @@ fn bench_source_hash_exists(c: &mut Criterion) {
     for scale in Scale::for_bench() {
         let fix = Fixture::generate(scale);
         group.bench_with_input(BenchmarkId::from_parameter(scale), &fix, |b, fix| {
-            b.iter(|| fix.graph.source_hash_exists("hash_42"));
+            let key = blake3::hash(b"hash_42").to_hex().to_string();
+            b.iter(|| fix.graph.source_hash_exists(&key));
         });
     }
     group.finish();

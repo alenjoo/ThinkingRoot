@@ -86,13 +86,13 @@ fn graph_link_relations(bencher: divan::Bencher, scale: &Scale) {
 
     // Fixture is already populated with entities and claims — build it once
     let fix = Fixture::generate(scale);
-    let len = fix.entity_names.len();
+    let len = fix.entity_ids.len();
     let iterations = scale.relation_count().min(len * 2);
 
     bencher.bench_local(|| {
         for i in 0..iterations {
-            let from = &fix.entity_names[i % len];
-            let to = &fix.entity_names[(i + 1) % len];
+            let from = &fix.entity_ids[i % len];
+            let to = &fix.entity_ids[(i + 1) % len];
             let _ = fix.graph.link_entities(from, to, "depends_on", 0.5_f64);
         }
     });

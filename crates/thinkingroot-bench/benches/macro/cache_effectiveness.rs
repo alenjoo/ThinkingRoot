@@ -28,9 +28,10 @@ fn fingerprint_check_all_cached(bencher: divan::Bencher, scale: &Scale) {
 
     bencher.bench_local(|| {
         for i in 0..100_usize {
+            let key = blake3::hash(format!("hash_{i}").as_bytes()).to_hex().to_string();
             let _ = fix
                 .graph
-                .source_hash_exists(&format!("hash_{i}"))
+                .source_hash_exists(&key)
                 .expect("source_hash_exists failed");
         }
     });
@@ -79,7 +80,9 @@ fn fingerprint_check_mixed_80_20(bencher: divan::Bencher, scale: &Scale) {
                 format!("novel_hash_{i}")
             } else {
                 // 80 % hits — cycle through the first 50 source hashes
-                format!("hash_{}", i % 50)
+                blake3::hash(format!("hash_{}", i % 50).as_bytes())
+                    .to_hex()
+                    .to_string()
             };
             let _ = fix
                 .graph

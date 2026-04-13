@@ -160,7 +160,6 @@ mkdir -p "${RESULTS_DIR}"
 "${BINARY}" serve \
   --port "${PORT}" \
   --path "${WORKSPACE_PATH}" \
-  --no-mcp \
   > "${RESULTS_DIR}/server.log" 2>&1 &
 SERVER_PID=$!
 echo "      Server PID: ${SERVER_PID}"

@@ -10,25 +10,22 @@ publish = false
 
 [features]
 default = ["vector"]
-vector = ["thinkingroot-graph/vector", "thinkingroot-serve/vector"]
+vector = ["thinkingroot-graph/vector"]
 
 [dependencies]
 thinkingroot-core = { workspace = true }
 thinkingroot-graph = { workspace = true }
 thinkingroot-parse = { workspace = true }
-thinkingroot-serve = { workspace = true }
-tokio = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-rmp-serde = { workspace = true }
-chrono = { workspace = true }
-blake3 = { workspace = true }
 rand = { workspace = true }
 tempfile = "3"
 
 [dev-dependencies]
 criterion = { workspace = true }
 divan = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rmp-serde = { workspace = true }
+blake3 = { workspace = true }
 
 # ── Criterion micro-benchmarks ──────────────────────────────
 [[bench]]

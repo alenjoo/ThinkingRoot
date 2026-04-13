@@ -17,6 +17,7 @@ pub struct Fixture {
     pub sample_claim_id: String,
     pub sample_source_id: String,
     pub entity_names: Vec<String>,
+    pub entity_ids: Vec<String>,
     _tmpdir: TempDir,
 }
 
@@ -213,6 +214,7 @@ impl Fixture {
             sample_claim_id,
             sample_source_id,
             entity_names,
+            entity_ids,
             _tmpdir: tmpdir,
         }
     }

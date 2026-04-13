@@ -54,11 +54,9 @@ export default function () {
     url = `${BASE_URL}/api/v1/ws/${WS}/health`;
   }
 
-  const start = Date.now();
   const res = http.get(url);
-  const elapsed = Date.now() - start;
 
-  mixedLatency.add(elapsed);
+  mixedLatency.add(res.timings.duration);
 
   const success = check(res, {
     'status is 200': (r) => r.status === 200,

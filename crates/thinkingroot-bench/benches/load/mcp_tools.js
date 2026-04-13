@@ -68,11 +68,9 @@ export default function () {
   const url = `${BASE_URL}/mcp?sessionId=bench`;
   const params = { headers: { 'Content-Type': 'application/json' } };
 
-  const start = Date.now();
   const res = http.post(url, body, params);
-  const elapsed = Date.now() - start;
 
-  mcpLatency.add(elapsed);
+  mcpLatency.add(res.timings.duration);
 
   const success = check(res, {
     'status 200 or 202': (r) => r.status === 200 || r.status === 202,

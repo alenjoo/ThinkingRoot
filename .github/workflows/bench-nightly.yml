@@ -12,6 +12,10 @@ on:
 jobs:
   full-bench:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      BENCH_SCALE: ${{ github.event.inputs.scale || 'medium' }}
     steps:
       - uses: actions/checkout@v4
 
