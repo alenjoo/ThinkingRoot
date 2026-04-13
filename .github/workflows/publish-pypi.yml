@@ -1,9 +1,7 @@
 name: Publish Python SDK to PyPI
 
 on:
-  push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:  # manual only — re-enable tag trigger once PyPI builds are stable
 
 env:
   CARGO_TERM_COLOR: always

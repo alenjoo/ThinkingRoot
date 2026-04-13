@@ -41,7 +41,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/thinkingroot/thinkingroot"
 homepage = "https://thinkingroot.dev"
 documentation = "https://docs.thinkingroot.dev"
-rust-version = "1.85"
+rust-version = "1.91"
 keywords = ["knowledge-graph", "llm", "ai", "mcp", "rag"]
 categories = ["development-tools", "database", "parser-implementations"]
 
