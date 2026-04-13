@@ -40,7 +40,6 @@ path = "benches/micro/graph_queries.rs"
 name = "vector_search"
 harness = false
 path = "benches/micro/vector_search.rs"
-required-features = ["vector"]
 
 [[bench]]
 name = "parser_throughput"
