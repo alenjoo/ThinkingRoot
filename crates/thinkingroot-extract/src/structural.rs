@@ -161,24 +161,24 @@ fn extract_function_def(chunk: &Chunk, source_uri: &str) -> ExtractionResult {
     };
 
     // If this is a method (has a parent type), also record parent→method.
-    if let Some(parent) = &chunk.metadata.parent {
-        if !parent.is_empty() {
-            let parent_entity = ExtractedEntity {
-                name: parent.clone(),
-                entity_type: "concept".to_string(), // conservative default for parent scope
-                aliases: Vec::new(),
-                description: Some(format!("Type defined in {file_name}")),
-            };
-            let parent_contains = ExtractedRelation {
-                from_entity: parent.clone(),
-                to_entity: name.clone(),
-                relation_type: "contains".to_string(),
-                description: Some(format!("{parent} contains method {name}")),
-                confidence: 0.99,
-            };
-            result.entities.push(parent_entity);
-            result.relations.push(parent_contains);
-        }
+    if let Some(parent) = &chunk.metadata.parent
+        && !parent.is_empty()
+    {
+        let parent_entity = ExtractedEntity {
+            name: parent.clone(),
+            entity_type: "concept".to_string(), // conservative default for parent scope
+            aliases: Vec::new(),
+            description: Some(format!("Type defined in {file_name}")),
+        };
+        let parent_contains = ExtractedRelation {
+            from_entity: parent.clone(),
+            to_entity: name.clone(),
+            relation_type: "contains".to_string(),
+            description: Some(format!("{parent} contains method {name}")),
+            confidence: 0.99,
+        };
+        result.entities.push(parent_entity);
+        result.relations.push(parent_contains);
     }
 
     // Gap 2: emit calls relations for each function this function calls.
@@ -256,34 +256,34 @@ fn extract_type_def(chunk: &Chunk, source_uri: &str) -> ExtractionResult {
     };
 
     // If this is `impl Trait for Type`, emit an `implements` relation.
-    if let Some(trait_name) = &chunk.metadata.trait_name {
-        if !trait_name.is_empty() {
-            let trait_entity = ExtractedEntity {
-                name: trait_name.clone(),
-                entity_type: "concept".to_string(),
-                aliases: Vec::new(),
-                description: Some(format!("Trait implemented by {name}")),
-            };
-            let implements_rel = ExtractedRelation {
-                from_entity: name.clone(),
-                to_entity: trait_name.clone(),
-                relation_type: "implements".to_string(),
-                description: Some(format!("{name} implements {trait_name}")),
-                confidence: 0.99,
-            };
-            result.entities.push(trait_entity);
-            result.relations.push(implements_rel);
+    if let Some(trait_name) = &chunk.metadata.trait_name
+        && !trait_name.is_empty()
+    {
+        let trait_entity = ExtractedEntity {
+            name: trait_name.clone(),
+            entity_type: "concept".to_string(),
+            aliases: Vec::new(),
+            description: Some(format!("Trait implemented by {name}")),
+        };
+        let implements_rel = ExtractedRelation {
+            from_entity: name.clone(),
+            to_entity: trait_name.clone(),
+            relation_type: "implements".to_string(),
+            description: Some(format!("{name} implements {trait_name}")),
+            confidence: 0.99,
+        };
+        result.entities.push(trait_entity);
+        result.relations.push(implements_rel);
 
-            let impl_claim = ExtractedClaim {
-                statement: format!("{name} implements the {trait_name} trait"),
-                claim_type: "definition".to_string(),
-                confidence: 0.99,
-                entities: vec![name.clone(), trait_name.clone()],
-                source_quote: Some(chunk.content.lines().next().unwrap_or("").to_string()),
-                extraction_tier: ExtractionTier::Structural,
-            };
-            result.claims.push(impl_claim);
-        }
+        let impl_claim = ExtractedClaim {
+            statement: format!("{name} implements the {trait_name} trait"),
+            claim_type: "definition".to_string(),
+            confidence: 0.99,
+            entities: vec![name.clone(), trait_name.clone()],
+            source_quote: Some(chunk.content.lines().next().unwrap_or("").to_string()),
+            extraction_tier: ExtractionTier::Structural,
+        };
+        result.claims.push(impl_claim);
     }
 
     // For each field type, emit a `depends_on` relation.
@@ -431,12 +431,11 @@ fn extract_prose(chunk: &Chunk, source_uri: &str) -> ExtractionResult {
     let mut result = ExtractionResult::empty();
 
     // Git authorship: source_uri starts with git:// AND commit_author is set.
-    if source_uri.starts_with("git://") {
-        if let Some(author) = &chunk.metadata.commit_author {
-            if !author.is_empty() {
-                result.merge(extract_git_commit(chunk, source_uri, author));
-            }
-        }
+    if source_uri.starts_with("git://")
+        && let Some(author) = &chunk.metadata.commit_author
+        && !author.is_empty()
+    {
+        result.merge(extract_git_commit(chunk, source_uri, author));
     }
 
     // Link extraction: any Prose with non-empty links.

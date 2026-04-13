@@ -44,6 +44,18 @@ impl Scale {
         &[Scale::Small, Scale::Medium, Scale::Large]
     }
 
+    /// Return scales to run: if BENCH_SCALE is set, return only that scale;
+    /// otherwise return all three. This keeps CI fast while allowing full
+    /// multi-scale runs when explicitly requested.
+    pub fn for_bench() -> Vec<Scale> {
+        match std::env::var("BENCH_SCALE").as_deref() {
+            Ok("small") => vec![Scale::Small],
+            Ok("medium") => vec![Scale::Medium],
+            Ok("large") => vec![Scale::Large],
+            _ => vec![Scale::Small, Scale::Medium, Scale::Large],
+        }
+    }
+
     pub fn from_env() -> Scale {
         match std::env::var("BENCH_SCALE").as_deref() {
             Ok("small") => Scale::Small,

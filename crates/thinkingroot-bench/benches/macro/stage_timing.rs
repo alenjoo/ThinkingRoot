@@ -10,6 +10,9 @@ use thinkingroot_graph::graph::GraphStore;
 #[divan::bench(args = [Scale::Small, Scale::Medium, Scale::Large])]
 fn graph_insert_entities(bencher: divan::Bencher, scale: &Scale) {
     let scale = *scale;
+    if !Scale::for_bench().contains(&scale) {
+        return;
+    }
     let count = scale.entity_count();
 
     // Pre-generate entities outside the measured body
@@ -38,6 +41,9 @@ fn graph_insert_entities(bencher: divan::Bencher, scale: &Scale) {
 #[divan::bench(args = [Scale::Small, Scale::Medium, Scale::Large])]
 fn graph_insert_claims(bencher: divan::Bencher, scale: &Scale) {
     let scale = *scale;
+    if !Scale::for_bench().contains(&scale) {
+        return;
+    }
     let count = scale.claim_count();
 
     // Pre-generate a source id and workspace id for all claims
@@ -74,6 +80,9 @@ fn graph_insert_claims(bencher: divan::Bencher, scale: &Scale) {
 #[divan::bench(args = [Scale::Small, Scale::Medium, Scale::Large])]
 fn graph_link_relations(bencher: divan::Bencher, scale: &Scale) {
     let scale = *scale;
+    if !Scale::for_bench().contains(&scale) {
+        return;
+    }
 
     // Fixture is already populated with entities and claims — build it once
     let fix = Fixture::generate(scale);
@@ -96,6 +105,9 @@ fn graph_link_relations(bencher: divan::Bencher, scale: &Scale) {
 #[divan::bench(args = [Scale::Small, Scale::Medium])]
 fn entity_resolution_scan(bencher: divan::Bencher, scale: &Scale) {
     let scale = *scale;
+    if !Scale::for_bench().contains(&scale) {
+        return;
+    }
     let fix = Fixture::generate(scale);
 
     bencher.bench_local(|| {

@@ -82,7 +82,7 @@ fn deterministic_query(dim: usize) -> Vec<f32> {
 fn bench_cosine_search_top5(c: &mut Criterion) {
     let mut group = c.benchmark_group("vector/cosine_search_top5");
     let query = deterministic_query(DIM);
-    for &scale in Scale::all() {
+    for scale in Scale::for_bench() {
         let index = BenchVectorIndex::generate(scale.embedding_count(), DIM);
         group.bench_with_input(BenchmarkId::from_parameter(scale), &index, |b, idx| {
             b.iter(|| idx.cosine_search(&query, 5));
@@ -94,7 +94,7 @@ fn bench_cosine_search_top5(c: &mut Criterion) {
 fn bench_cosine_search_top10(c: &mut Criterion) {
     let mut group = c.benchmark_group("vector/cosine_search_top10");
     let query = deterministic_query(DIM);
-    for &scale in Scale::all() {
+    for scale in Scale::for_bench() {
         let index = BenchVectorIndex::generate(scale.embedding_count(), DIM);
         group.bench_with_input(BenchmarkId::from_parameter(scale), &index, |b, idx| {
             b.iter(|| idx.cosine_search(&query, 10));
@@ -106,7 +106,7 @@ fn bench_cosine_search_top10(c: &mut Criterion) {
 fn bench_cosine_search_top50(c: &mut Criterion) {
     let mut group = c.benchmark_group("vector/cosine_search_top50");
     let query = deterministic_query(DIM);
-    for &scale in Scale::all() {
+    for scale in Scale::for_bench() {
         let index = BenchVectorIndex::generate(scale.embedding_count(), DIM);
         group.bench_with_input(BenchmarkId::from_parameter(scale), &index, |b, idx| {
             b.iter(|| idx.cosine_search(&query, 50));

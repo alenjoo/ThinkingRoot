@@ -110,11 +110,10 @@ impl Config {
             if let (Some(ws), Some(g)) = (
                 workspace.llm.providers.azure.as_mut(),
                 global.llm.providers.azure.as_ref(),
-            ) {
-                if ws.api_key_env.is_none() {
+            )
+                && ws.api_key_env.is_none() {
                     ws.api_key_env = g.api_key_env.clone();
                 }
-            }
         }
         workspace
     }

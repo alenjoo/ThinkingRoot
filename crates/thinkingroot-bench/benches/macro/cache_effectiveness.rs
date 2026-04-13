@@ -21,6 +21,9 @@ fn blake3_hash_kb(bencher: divan::Bencher, size_kb: &usize) {
 #[divan::bench(args = [Scale::Small, Scale::Medium, Scale::Large])]
 fn fingerprint_check_all_cached(bencher: divan::Bencher, scale: &Scale) {
     let scale = *scale;
+    if !Scale::for_bench().contains(&scale) {
+        return;
+    }
     let fix = Fixture::generate(scale);
 
     bencher.bench_local(|| {
@@ -41,6 +44,9 @@ fn fingerprint_check_all_cached(bencher: divan::Bencher, scale: &Scale) {
 #[divan::bench(args = [Scale::Small, Scale::Medium, Scale::Large])]
 fn fingerprint_check_none_cached(bencher: divan::Bencher, scale: &Scale) {
     let scale = *scale;
+    if !Scale::for_bench().contains(&scale) {
+        return;
+    }
     let fix = Fixture::generate(scale);
 
     bencher.bench_local(|| {
@@ -61,6 +67,9 @@ fn fingerprint_check_none_cached(bencher: divan::Bencher, scale: &Scale) {
 #[divan::bench(args = [Scale::Small, Scale::Medium, Scale::Large])]
 fn fingerprint_check_mixed_80_20(bencher: divan::Bencher, scale: &Scale) {
     let scale = *scale;
+    if !Scale::for_bench().contains(&scale) {
+        return;
+    }
     let fix = Fixture::generate(scale);
 
     bencher.bench_local(|| {

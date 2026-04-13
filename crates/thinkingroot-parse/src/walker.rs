@@ -43,15 +43,15 @@ pub fn walk(root: &Path, config: &ParserConfig) -> Result<Vec<PathBuf>> {
         }
 
         // Check file size limit.
-        if let Ok(meta) = path.metadata() {
-            if meta.len() > config.max_file_size {
-                tracing::debug!(
-                    "skipping large file: {} ({} bytes)",
-                    path.display(),
-                    meta.len()
-                );
-                continue;
-            }
+        if let Ok(meta) = path.metadata()
+            && meta.len() > config.max_file_size
+        {
+            tracing::debug!(
+                "skipping large file: {} ({} bytes)",
+                path.display(),
+                meta.len()
+            );
+            continue;
         }
 
         // If include_extensions is set, filter by extension.

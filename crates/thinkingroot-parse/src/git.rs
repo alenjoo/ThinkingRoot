@@ -122,22 +122,22 @@ fn parse_changed_files(diff_stat: &str) -> Vec<String> {
             continue;
         }
         // Handle git rename notation: "prefix{old => new}suffix"
-        if let (Some(brace_start), Some(brace_end)) = (path.find('{'), path.find('}')) {
-            if brace_start < brace_end {
-                let prefix = &path[..brace_start];
-                let suffix = &path[brace_end + 1..];
-                let inner = &path[brace_start + 1..brace_end];
-                if let Some((old_part, new_part)) = inner.split_once(" => ") {
-                    let old_path = format!("{}{}{}", prefix, old_part.trim(), suffix);
-                    let new_path = format!("{}{}{}", prefix, new_part.trim(), suffix);
-                    if !old_path.is_empty() {
-                        result.push(old_path);
-                    }
-                    if !new_path.is_empty() {
-                        result.push(new_path);
-                    }
-                    continue;
+        if let (Some(brace_start), Some(brace_end)) = (path.find('{'), path.find('}'))
+            && brace_start < brace_end
+        {
+            let prefix = &path[..brace_start];
+            let suffix = &path[brace_end + 1..];
+            let inner = &path[brace_start + 1..brace_end];
+            if let Some((old_part, new_part)) = inner.split_once(" => ") {
+                let old_path = format!("{}{}{}", prefix, old_part.trim(), suffix);
+                let new_path = format!("{}{}{}", prefix, new_part.trim(), suffix);
+                if !old_path.is_empty() {
+                    result.push(old_path);
                 }
+                if !new_path.is_empty() {
+                    result.push(new_path);
+                }
+                continue;
             }
         }
         // Handle bare-form rename: "old.rs => new.rs" or "src/a.rs => dst/b.rs"

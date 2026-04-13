@@ -1223,10 +1223,10 @@ fn extract_json_from_text(text: &str) -> &str {
         }
     }
 
-    if let Some(start) = text.find('{') {
-        if let Some(end) = text.rfind('}') {
-            return &text[start..=end];
-        }
+    if let Some(start) = text.find('{')
+        && let Some(end) = text.rfind('}')
+    {
+        return &text[start..=end];
     }
 
     text

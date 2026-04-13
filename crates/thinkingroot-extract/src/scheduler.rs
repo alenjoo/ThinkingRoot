@@ -330,10 +330,10 @@ impl ThroughputScheduler {
 
     async fn push_token(&self, tokens: u64) -> f64 {
         let mut w = self.token_window.lock().await;
-        if w.len() >= 20 {
-            if let Some(evicted) = w.pop_front() {
-                self.token_window_sum.fetch_sub(evicted, Ordering::Relaxed);
-            }
+        if w.len() >= 20
+            && let Some(evicted) = w.pop_front()
+        {
+            self.token_window_sum.fetch_sub(evicted, Ordering::Relaxed);
         }
         w.push_back(tokens);
         let new_sum = self.token_window_sum.fetch_add(tokens, Ordering::Relaxed) + tokens;
@@ -342,11 +342,11 @@ impl ThroughputScheduler {
 
     async fn push_latency(&self, latency_ms: u64) -> f64 {
         let mut w = self.latency_window.lock().await;
-        if w.len() >= 20 {
-            if let Some(evicted) = w.pop_front() {
-                self.latency_window_sum
-                    .fetch_sub(evicted, Ordering::Relaxed);
-            }
+        if w.len() >= 20
+            && let Some(evicted) = w.pop_front()
+        {
+            self.latency_window_sum
+                .fetch_sub(evicted, Ordering::Relaxed);
         }
         w.push_back(latency_ms);
         let new_sum = self
@@ -413,7 +413,7 @@ impl ThroughputScheduler {
             }
         } else {
             // No limits known (Bedrock, Ollama) — self-tune: ramp up 10% every 20 successes.
-            if successes > 0 && successes % 20 == 0 {
+            if successes > 0 && successes.is_multiple_of(20) {
                 let current = self.interval_ms.load(Ordering::Relaxed);
                 let new_interval = ((current as f64 * 0.90) as u64).max(100);
                 self.interval_ms.store(new_interval, Ordering::Relaxed);

@@ -433,26 +433,26 @@ fn extract_field_types(source: &str, node: &tree_sitter::Node) -> Vec<String> {
                 if matches!(
                     field.kind(),
                     "field_declaration" | "typed_parameter" | "public_field_definition"
-                ) {
-                    if let Some(type_node) = field.child_by_field_name("type") {
-                        let raw = source[type_node.byte_range()].trim().to_string();
-                        let base = raw
-                            .trim_start_matches('&')
-                            .trim_start_matches("mut ")
-                            .trim_start_matches("Option<")
-                            .trim_start_matches("Vec<")
-                            .trim_start_matches("Arc<")
-                            .trim_start_matches("Box<")
-                            .trim_start_matches("dyn ")
-                            .split('<')
-                            .next()
-                            .unwrap_or(&raw)
-                            .trim_end_matches('>')
-                            .trim()
-                            .to_string();
-                        if !base.is_empty() && !is_primitive_type(&base) {
-                            types.push(base);
-                        }
+                )
+                    && let Some(type_node) = field.child_by_field_name("type")
+                {
+                    let raw = source[type_node.byte_range()].trim().to_string();
+                    let base = raw
+                        .trim_start_matches('&')
+                        .trim_start_matches("mut ")
+                        .trim_start_matches("Option<")
+                        .trim_start_matches("Vec<")
+                        .trim_start_matches("Arc<")
+                        .trim_start_matches("Box<")
+                        .trim_start_matches("dyn ")
+                        .split('<')
+                        .next()
+                        .unwrap_or(&raw)
+                        .trim_end_matches('>')
+                        .trim()
+                        .to_string();
+                    if !base.is_empty() && !is_primitive_type(&base) {
+                        types.push(base);
                     }
                 }
             }

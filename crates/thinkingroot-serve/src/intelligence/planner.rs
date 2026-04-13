@@ -100,14 +100,14 @@ pub fn plan_query(query: &str, session: &SessionContext) -> QueryPlan {
 
     // ── Entity deep-dive: CamelCase, quoted name, or session focus ──
     let entity = extract_entity_name(query, &session.focus_entity);
-    if let Some(ref name) = entity {
-        if !name.is_empty() {
-            return QueryPlan {
-                intent: QueryIntent::FullContext,
-                steps: vec![PlanStep::GetEntityContext(name.clone())],
-                entity_hint: entity,
-            };
-        }
+    if let Some(ref name) = entity
+        && !name.is_empty()
+    {
+        return QueryPlan {
+            intent: QueryIntent::FullContext,
+            steps: vec![PlanStep::GetEntityContext(name.clone())],
+            entity_hint: entity,
+        };
     }
 
     // ── Default: semantic search ─────────────────────────────────
@@ -127,12 +127,12 @@ pub fn plan_query(query: &str, session: &SessionContext) -> QueryPlan {
 /// 4. Session focus entity (fallback — entity agent last investigated)
 fn extract_entity_name(query: &str, focus: &Option<String>) -> Option<String> {
     // 1. Quoted name.
-    if let Some(start) = query.find('"') {
-        if let Some(end) = query[start + 1..].find('"') {
-            let name = &query[start + 1..start + 1 + end];
-            if !name.is_empty() {
-                return Some(name.to_string());
-            }
+    if let Some(start) = query.find('"')
+        && let Some(end) = query[start + 1..].find('"')
+    {
+        let name = &query[start + 1..start + 1 + end];
+        if !name.is_empty() {
+            return Some(name.to_string());
         }
     }
 

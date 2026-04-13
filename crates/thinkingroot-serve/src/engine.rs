@@ -618,39 +618,35 @@ impl QueryEngine {
 
             // Vector keys are stored with type prefixes ("entity:{id}", "claim:{id}").
             // Strip the prefix to get the bare graph ID for lookup.
-            if let Some(bare_id) = key.strip_prefix("entity:") {
-                if let Some((eid, ename, etype)) =
+            if let Some(bare_id) = key.strip_prefix("entity:")
+                && let Some((eid, ename, etype)) =
                     all_entities.iter().find(|(eid, _, _)| eid == bare_id)
-                {
-                    if seen_entity_ids.insert(eid.clone()) {
-                        let claims = storage.graph.get_claims_for_entity(eid)?;
-                        entity_hits.push(EntitySearchHit {
-                            id: eid.clone(),
-                            name: ename.clone(),
-                            entity_type: etype.clone(),
-                            claim_count: claims.len(),
-                            relevance: *score,
-                        });
-                    }
-                }
+                && seen_entity_ids.insert(eid.clone())
+            {
+                let claims = storage.graph.get_claims_for_entity(eid)?;
+                entity_hits.push(EntitySearchHit {
+                    id: eid.clone(),
+                    name: ename.clone(),
+                    entity_type: etype.clone(),
+                    claim_count: claims.len(),
+                    relevance: *score,
+                });
                 continue;
             }
 
-            if let Some(bare_id) = key.strip_prefix("claim:") {
-                if let Some((cid, stmt, ctype, conf, uri)) =
+            if let Some(bare_id) = key.strip_prefix("claim:")
+                && let Some((cid, stmt, ctype, conf, uri)) =
                     all_claims.iter().find(|(cid, _, _, _, _)| cid == bare_id)
-                {
-                    if seen_claim_ids.insert(cid.clone()) {
-                        claim_hits.push(ClaimSearchHit {
-                            id: cid.clone(),
-                            statement: stmt.clone(),
-                            claim_type: ctype.clone(),
-                            confidence: *conf,
-                            source_uri: uri.clone(),
-                            relevance: *score,
-                        });
-                    }
-                }
+                && seen_claim_ids.insert(cid.clone())
+            {
+                claim_hits.push(ClaimSearchHit {
+                    id: cid.clone(),
+                    statement: stmt.clone(),
+                    claim_type: ctype.clone(),
+                    confidence: *conf,
+                    source_uri: uri.clone(),
+                    relevance: *score,
+                });
             }
         }
 

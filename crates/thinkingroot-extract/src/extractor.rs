@@ -176,12 +176,12 @@ impl Extractor {
                     }
                 }
 
-                if let Some(ref cache) = self.cache {
-                    if let Some(cached) = cache.get(&chunk.content) {
-                        tracing::debug!("extraction cache hit for chunk in {}", doc.uri);
-                        cache_hits_data.push((doc.source_id, doc.uri.clone(), cached));
-                        continue;
-                    }
+                if let Some(ref cache) = self.cache
+                    && let Some(cached) = cache.get(&chunk.content)
+                {
+                    tracing::debug!("extraction cache hit for chunk in {}", doc.uri);
+                    cache_hits_data.push((doc.source_id, doc.uri.clone(), cached));
+                    continue;
                 }
 
                 let sub_chunks = split_to_token_budget(&chunk.content, max_chunk_tokens);
@@ -362,10 +362,10 @@ impl Extractor {
 
         // Guard: if some tasks returned None (all sub-chunks failed), fire a
         // synthetic catch-up event so the bar always reaches 100%.
-        if done < total_chunks {
-            if let Some(ref pf) = self.progress {
-                pf(total_chunks, total_chunks, "");
-            }
+        if done < total_chunks
+            && let Some(ref pf) = self.progress
+        {
+            pf(total_chunks, total_chunks, "");
         }
 
         tracing::info!(
@@ -419,10 +419,10 @@ impl Extractor {
                     .claim_entity_names
                     .insert(claim.id, ext_claim.entities.clone());
             }
-            if let Some(ref quote) = ext_claim.source_quote {
-                if !quote.is_empty() {
-                    output.claim_source_quotes.insert(claim.id, quote.clone());
-                }
+            if let Some(ref quote) = ext_claim.source_quote
+                && !quote.is_empty()
+            {
+                output.claim_source_quotes.insert(claim.id, quote.clone());
             }
             output.claims.push(claim);
         }
