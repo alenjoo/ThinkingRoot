@@ -13,6 +13,7 @@ mod progress;
 mod provider_cmd;
 mod serve;
 mod setup;
+mod update_cmd;
 mod watch;
 mod workspace;
 
@@ -218,6 +219,8 @@ enum Commands {
         #[command(subcommand)]
         action: Option<ProviderAction>,
     },
+    /// Update root to the latest version
+    Update,
 }
 
 #[derive(Subcommand)]
@@ -450,6 +453,9 @@ async fn main() -> anyhow::Result<()> {
                 provider_cmd::run_provider_set_model(&model, local, &path)?;
             }
         },
+        Some(Commands::Update) => {
+            update_cmd::run_update().await?;
+        }
         None => {
             // `root ./path` shorthand — same as `root compile ./path`.
             if let Some(path) = cli.path {
@@ -560,7 +566,7 @@ async fn run_health(path: &PathBuf) -> anyhow::Result<()> {
         );
     }
 
-    let config = thinkingroot_core::Config::load(&path)?;
+    let config = thinkingroot_core::Config::load_merged(&path)?;
     let storage = thinkingroot_graph::StorageEngine::init(&data_dir)
         .await
         .context("failed to open storage")?;
@@ -708,6 +714,18 @@ fn run_init(path: &Path) -> anyhow::Result<()> {
         style("ThinkingRoot").green().bold(),
         data_dir.display()
     );
+
+    let global_exists = thinkingroot_core::GlobalConfig::path()
+        .map(|p| p.exists())
+        .unwrap_or(false);
+    if !global_exists {
+        println!(
+            "  {} No global config found — run {} first to configure your LLM provider.",
+            style("Note:").yellow().bold(),
+            style("root setup").cyan()
+        );
+    }
+
     println!(
         "  Run `root compile {}` to compile your knowledge.",
         path.display()

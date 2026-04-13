@@ -98,6 +98,10 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
+          repository: DevbyNaveen/releases
+          token: ${{ secrets.RELEASES_PAT }}
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
           files: |
             artifacts/root-linux-amd64
             artifacts/root-linux-arm64
@@ -105,7 +109,7 @@ jobs:
             artifacts/root-macos-arm64
             artifacts/root-windows-amd64.exe
             artifacts/checksums.txt
-          generate_release_notes: true
+          generate_release_notes: false
           draft: false
           fail_on_unmatched_files: true
 
@@ -118,8 +122,8 @@ jobs:
       - uses: mislav/bump-homebrew-formula-action@v3
         with:
           formula-name: root
-          homebrew-tap: thinkingroot/homebrew-thinkingroot
+          homebrew-tap: DevbyNaveen/homebrew-thinkingroot
           tag-name: ${{ github.ref_name }}
-          download-url: https://github.com/thinkingroot/thinkingroot/releases/download/${{ github.ref_name }}/root-macos-arm64
+          download-url: https://github.com/DevbyNaveen/releases/releases/download/${{ github.ref_name }}/root-macos-arm64
         env:
           COMMITTER_TOKEN: ${{ secrets.HOMEBREW_PR_PAT }}
