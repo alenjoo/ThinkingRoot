@@ -1,0 +1,69 @@
+[package]
+name = "thinkingroot-bench"
+description = "Benchmark suite for ThinkingRoot — micro (Criterion), macro (Divan), load (k6)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+default = ["vector"]
+vector = ["thinkingroot-graph/vector", "thinkingroot-serve/vector"]
+
+[dependencies]
+thinkingroot-core = { workspace = true }
+thinkingroot-graph = { workspace = true }
+thinkingroot-parse = { workspace = true }
+thinkingroot-serve = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rmp-serde = { workspace = true }
+chrono = { workspace = true }
+blake3 = { workspace = true }
+rand = { workspace = true }
+tempfile = "3"
+
+[dev-dependencies]
+criterion = { workspace = true }
+divan = { workspace = true }
+
+# ── Criterion micro-benchmarks ──────────────────────────────
+[[bench]]
+name = "graph_queries"
+harness = false
+path = "benches/micro/graph_queries.rs"
+
+[[bench]]
+name = "vector_search"
+harness = false
+path = "benches/micro/vector_search.rs"
+required-features = ["vector"]
+
+[[bench]]
+name = "parser_throughput"
+harness = false
+path = "benches/micro/parser_throughput.rs"
+
+[[bench]]
+name = "serialization"
+harness = false
+path = "benches/micro/serialization.rs"
+
+# ── Divan macro-benchmarks ──────────────────────────────────
+[[bench]]
+name = "pipeline_e2e"
+harness = false
+path = "benches/macro/pipeline_e2e.rs"
+
+[[bench]]
+name = "stage_timing"
+harness = false
+path = "benches/macro/stage_timing.rs"
+
+[[bench]]
+name = "cache_effectiveness"
+harness = false
+path = "benches/macro/cache_effectiveness.rs"
