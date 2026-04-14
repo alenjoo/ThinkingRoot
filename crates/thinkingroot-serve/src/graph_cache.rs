@@ -88,29 +88,68 @@ pub struct KnowledgeGraph {
     relations_by_from_name: HashMap<String, Vec<usize>>, // lowercase from_name → relation indices
 }
 
+// ---------------------------------------------------------------------------
+// Raw data fetched from CozoDB — all Vecs, no indexes built yet
+// ---------------------------------------------------------------------------
+
+/// Intermediate bag of raw rows fetched from CozoDB.
+///
+/// Separating the I/O phase (`fetch_raw`) from the index-building phase
+/// (`build_from_raw`) lets the caller release the storage `Mutex` before
+/// doing CPU-intensive HashMap construction. This eliminates the ~1-2 s
+/// storage lock contention that blocked vector searches during cache reload.
+pub(crate) struct RawGraphData {
+    pub sources: Vec<(String, String, String)>,           // (id, uri, source_type)
+    pub source_hashes: Vec<(String, String)>,             // (uri, content_hash)
+    pub entities: Vec<(String, String, String)>,          // (id, canonical_name, entity_type)
+    pub aliases: Vec<(String, String)>,                   // (entity_id, alias)
+    pub claims: Vec<(String, String, String, f64, String)>, // (id, stmt, type, conf, source_uri)
+    pub claim_entity_edges: Vec<(String, String)>,        // (claim_id, entity_id)
+    pub relations: Vec<(String, String, String, String, String, f64)>, // (from_name, to_name, rel_type, from_type, to_type, strength)
+    pub contradictions: Vec<(String, String, String, String, String)>, // (id, a, b, expl, status)
+}
+
 impl KnowledgeGraph {
     // ── Load ──────────────────────────────────────────────────────────────────
 
-    /// Load the complete knowledge graph from CozoDB into memory.
+    /// **Phase 1 of 2**: Execute 8 bulk CozoDB queries and return the raw rows.
     ///
-    /// Executes 6 bulk queries (not N per-entity queries), builds all inverted
-    /// indexes, and returns the fully populated cache. Typical load time at
-    /// Large scale: ~1–2 s.  Called once at `root serve` startup and after
-    /// each `root compile` / `contribute_claims`.
-    pub fn load_from_graph(graph: &GraphStore) -> Result<Self> {
-        tracing::debug!("building in-memory knowledge graph cache");
+    /// This is the only phase that requires the storage lock. Typical wall time
+    /// at Large scale (50 K entities / 200 K claims): ~300–600 ms.
+    /// Caller should release the storage `Mutex` before calling `build_from_raw`.
+    pub(crate) fn fetch_raw(graph: &GraphStore) -> Result<RawGraphData> {
+        tracing::debug!("fetching raw knowledge graph data from CozoDB");
+        Ok(RawGraphData {
+            sources: graph.get_all_sources()?,
+            source_hashes: graph.get_sources_with_hashes()?,
+            entities: graph.get_all_entities()?,
+            aliases: graph.get_all_entity_aliases()?,
+            claims: graph.get_all_claims_with_sources()?,
+            claim_entity_edges: graph.get_all_claim_entity_edges()?,
+            relations: graph.get_all_relations()?,
+            contradictions: graph.get_contradictions()?,
+        })
+    }
+
+    /// **Phase 2 of 2**: Build all in-memory indexes from raw CozoDB rows.
+    ///
+    /// Pure CPU — no I/O, no locks. Typical wall time at Large scale: ~400–800 ms.
+    /// Called after the storage `Mutex` has been released so vector searches
+    /// can proceed concurrently while index building is in flight.
+    pub(crate) fn build_from_raw(raw: RawGraphData) -> Self {
+        let source_count = raw.sources.len();
+        let entity_count = raw.entities.len();
+        let claim_count = raw.claims.len();
 
         // ── Sources ───────────────────────────────────────────────────────────
-        let raw_sources = graph.get_all_sources()?;
-        let source_count = raw_sources.len();
-
-        let source_hashes: HashSet<String> = graph
-            .get_sources_with_hashes()?
+        let source_hashes: HashSet<String> = raw
+            .source_hashes
             .into_iter()
             .map(|(_, hash)| hash)
             .collect();
 
-        let sources: Vec<CachedSource> = raw_sources
+        let sources: Vec<CachedSource> = raw
+            .sources
             .iter()
             .map(|(id, uri, source_type)| CachedSource {
                 id: id.clone(),
@@ -120,12 +159,8 @@ impl KnowledgeGraph {
             .collect();
 
         // ── Entities + aliases ────────────────────────────────────────────────
-        let raw_entities = graph.get_all_entities()?;
-        let entity_count = raw_entities.len();
-
-        // One bulk query for all aliases — avoids N per-entity round-trips.
         let mut aliases_by_entity: HashMap<String, Vec<String>> = HashMap::new();
-        for (entity_id, alias) in graph.get_all_entity_aliases()? {
+        for (entity_id, alias) in raw.aliases {
             aliases_by_entity.entry(entity_id).or_default().push(alias);
         }
 
@@ -135,7 +170,7 @@ impl KnowledgeGraph {
             HashMap::with_capacity(entity_count * 2);
         let mut entities_ordered: Vec<String> = Vec::with_capacity(entity_count);
 
-        for (id, name, entity_type) in &raw_entities {
+        for (id, name, entity_type) in &raw.entities {
             let aliases = aliases_by_entity.remove(id).unwrap_or_default();
 
             // Index canonical name and every alias under their lowercase forms.
@@ -157,15 +192,11 @@ impl KnowledgeGraph {
         }
 
         // ── Claims + type index ───────────────────────────────────────────────
-        // get_all_claims_with_sources → (id, statement, claim_type, confidence, source_uri)
-        let raw_claims = graph.get_all_claims_with_sources()?;
-        let claim_count = raw_claims.len();
-
         let mut claims_by_id: HashMap<String, CachedClaim> =
             HashMap::with_capacity(claim_count);
         let mut claims_by_type: HashMap<String, Vec<String>> = HashMap::new();
 
-        for (id, statement, claim_type, confidence, source_uri) in raw_claims {
+        for (id, statement, claim_type, confidence, source_uri) in raw.claims {
             claims_by_type
                 .entry(claim_type.clone())
                 .or_default()
@@ -184,7 +215,7 @@ impl KnowledgeGraph {
 
         // ── Claim → entity adjacency ──────────────────────────────────────────
         let mut claims_by_entity: HashMap<String, Vec<String>> = HashMap::new();
-        for (claim_id, entity_id) in graph.get_all_claim_entity_edges()? {
+        for (claim_id, entity_id) in raw.claim_entity_edges {
             claims_by_entity
                 .entry(entity_id)
                 .or_default()
@@ -192,12 +223,10 @@ impl KnowledgeGraph {
         }
 
         // ── Relations + from-name index ───────────────────────────────────────
-        // get_all_relations → (from_name, to_name, rel_type, from_type, to_type, strength)
-        let raw_relations = graph.get_all_relations()?;
-        let mut relations: Vec<CachedRelation> = Vec::with_capacity(raw_relations.len());
+        let mut relations: Vec<CachedRelation> = Vec::with_capacity(raw.relations.len());
         let mut relations_by_from_name: HashMap<String, Vec<usize>> = HashMap::new();
 
-        for (from_name, to_name, relation_type, from_type, to_type, strength) in raw_relations {
+        for (from_name, to_name, relation_type, from_type, to_type, strength) in raw.relations {
             let idx = relations.len();
             relations_by_from_name
                 .entry(from_name.to_lowercase())
@@ -214,8 +243,8 @@ impl KnowledgeGraph {
         }
 
         // ── Contradictions ────────────────────────────────────────────────────
-        let contradictions = graph
-            .get_contradictions()?
+        let contradictions = raw
+            .contradictions
             .into_iter()
             .map(|(id, claim_a, claim_b, explanation, status)| CachedContradiction {
                 id,
@@ -230,10 +259,10 @@ impl KnowledgeGraph {
             entities = entity_count,
             claims = claim_count,
             sources = source_count,
-            "knowledge graph loaded into memory"
+            "knowledge graph indexes built"
         );
 
-        Ok(KnowledgeGraph {
+        KnowledgeGraph {
             source_count,
             entity_count,
             claim_count,
@@ -248,7 +277,18 @@ impl KnowledgeGraph {
             claims_by_entity,
             claims_by_type,
             relations_by_from_name,
-        })
+        }
+    }
+
+    /// Convenience wrapper: fetch raw data from CozoDB then build indexes.
+    ///
+    /// Use this at startup (single-threaded `mount`). For post-compile
+    /// cache refreshes use `fetch_raw` + `build_from_raw` separately so
+    /// the storage lock can be released between the two phases.
+    pub fn load_from_graph(graph: &GraphStore) -> Result<Self> {
+        tracing::debug!("building in-memory knowledge graph cache");
+        let raw = Self::fetch_raw(graph)?;
+        Ok(Self::build_from_raw(raw))
     }
 
     // ── Query methods — all O(1) or O(k) where k = result size ───────────────

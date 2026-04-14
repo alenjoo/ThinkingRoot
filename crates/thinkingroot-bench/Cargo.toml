@@ -16,6 +16,7 @@ vector = ["thinkingroot-graph/vector"]
 thinkingroot-core = { workspace = true }
 thinkingroot-graph = { workspace = true }
 thinkingroot-parse = { workspace = true }
+thinkingroot-serve = { workspace = true }
 rand = { workspace = true }
 tempfile = "3"
 
@@ -47,6 +48,11 @@ path = "benches/micro/parser_throughput.rs"
 name = "serialization"
 harness = false
 path = "benches/micro/serialization.rs"
+
+[[bench]]
+name = "cache_queries"
+harness = false
+path = "benches/micro/cache_queries.rs"
 
 # ── Divan macro-benchmarks ──────────────────────────────────
 [[bench]]

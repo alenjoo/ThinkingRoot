@@ -5022,6 +5022,7 @@ dependencies = [
  "thinkingroot-core",
  "thinkingroot-graph",
  "thinkingroot-parse",
+ "thinkingroot-serve",
 ]
 
 [[package]]

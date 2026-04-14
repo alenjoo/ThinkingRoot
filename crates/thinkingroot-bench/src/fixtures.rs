@@ -6,11 +6,16 @@ use thinkingroot_core::{
     SourceType, TrustLevel, WorkspaceId,
 };
 use thinkingroot_graph::graph::GraphStore;
+use thinkingroot_serve::graph_cache::KnowledgeGraph;
 
 use crate::Scale;
 
 pub struct Fixture {
+    /// CozoDB-backed store — benchmarks here measure the disk/Datalog path.
     pub graph: GraphStore,
+    /// In-memory cache built from `graph` — benchmarks here measure Phase B
+    /// (HashMap lookups, zero disk I/O, ~100 ns per operation).
+    pub cache: KnowledgeGraph,
     pub scale: Scale,
     pub sample_entity_name: String,
     pub sample_entity_id: String,
@@ -206,8 +211,15 @@ impl Fixture {
         let sample_claim_id = claim_ids[claim_count / 2].clone();
         let sample_source_id = source_ids[source_count / 2].clone();
 
+        // Build the in-memory cache from the same GraphStore.
+        // This is the Phase B layer — all subsequent cache_queries benchmarks
+        // read from here instead of hitting CozoDB.
+        let cache = KnowledgeGraph::load_from_graph(&graph)
+            .expect("failed to build KnowledgeGraph from fixture");
+
         Self {
             graph,
+            cache,
             scale,
             sample_entity_name,
             sample_entity_id,

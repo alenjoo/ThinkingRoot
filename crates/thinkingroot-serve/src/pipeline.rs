@@ -74,6 +74,10 @@ pub struct PipelineResult {
     pub cache_hits: usize,
     pub early_cutoffs: usize,
     pub structural_extractions: usize,
+    /// `true` when the pipeline wrote at least one change to CozoDB.
+    /// `false` means all files were fingerprint-identical — the cache is still
+    /// current and the caller should skip the reload entirely.
+    pub cache_dirty: bool,
 }
 
 pub async fn run_pipeline(
@@ -142,6 +146,8 @@ pub async fn run_pipeline(
             cache_hits: 0,
             early_cutoffs: skipped,
             structural_extractions: 0,
+            // All files were content-hash identical — CozoDB was not touched.
+            cache_dirty: false,
         });
     }
 
@@ -500,6 +506,8 @@ pub async fn run_pipeline(
             cache_hits,
             early_cutoffs: skipped + fingerprint_cutoffs,
             structural_extractions: extraction.structural_extractions,
+            // Deletions or fingerprint cutoffs mutated CozoDB — cache is stale.
+            cache_dirty: true,
         });
     }
 
@@ -708,6 +716,8 @@ pub async fn run_pipeline(
         cache_hits,
         early_cutoffs: skipped + fingerprint_cutoffs,
         structural_extractions,
+        // Full pipeline ran — CozoDB has new data.
+        cache_dirty: true,
     })
 }
 
