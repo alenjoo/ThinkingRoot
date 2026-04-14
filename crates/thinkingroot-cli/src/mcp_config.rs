@@ -171,6 +171,7 @@ pub fn apply_entry(existing: &mut Value, format: ConfigFormat, port: u16) {
             "url": format!("http://localhost:{}/mcp/sse", port)
         }),
         _ => json!({
+            "type": "sse",
             "url": format!("http://localhost:{}/mcp/sse", port)
         }),
     };
@@ -808,5 +809,16 @@ args = ["serve", "--mcp-stdio", "--path", "/workspace"]
         let mcp = doc["mcp_servers"].as_table().unwrap();
         assert!(mcp.contains_key("playwright"));
         assert!(!mcp.contains_key("thinkingroot"));
+    }
+
+    #[test]
+    fn mcp_servers_entry_includes_type_sse() {
+        let mut existing = json!({});
+        apply_entry(&mut existing, ConfigFormat::McpServers, 3000);
+        assert_eq!(existing["mcpServers"]["thinkingroot"]["type"], "sse");
+        assert_eq!(
+            existing["mcpServers"]["thinkingroot"]["url"],
+            "http://localhost:3000/mcp/sse"
+        );
     }
 }
