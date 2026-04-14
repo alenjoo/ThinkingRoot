@@ -58,11 +58,21 @@ impl JsonRpcResponse {
     }
 }
 
-pub fn server_info() -> Value {
+const SUPPORTED_VERSIONS: &[&str] = &["2025-03-26", "2024-11-05"];
+
+pub fn server_info(requested_version: Option<&str>) -> Value {
+    // Echo back the client's version if we support it; otherwise use our latest.
+    let version = requested_version
+        .filter(|v| SUPPORTED_VERSIONS.contains(v))
+        .unwrap_or(SUPPORTED_VERSIONS[0]);
     serde_json::json!({
-        "protocolVersion": "2024-11-05",
+        "protocolVersion": version,
         "serverInfo": { "name": "thinkingroot", "version": env!("CARGO_PKG_VERSION") },
-        "capabilities": { "resources": { "listChanged": false }, "tools": {} }
+        "capabilities": {
+            "resources": { "listChanged": false },
+            "tools": {},
+            "prompts": {}
+        }
     })
 }
 
@@ -75,7 +85,10 @@ pub async fn dispatch(
 ) -> JsonRpcResponse {
     let id = request.id.clone();
     match request.method.as_str() {
-        "initialize" => JsonRpcResponse::success(id, server_info()),
+        "initialize" => {
+            let requested = request.params.get("protocolVersion").and_then(|v| v.as_str());
+            JsonRpcResponse::success(id, server_info(requested))
+        }
         "notifications/initialized" => JsonRpcResponse::success(id, Value::Null),
         "resources/list" => resources::handle_list(id, engine, default_workspace).await,
         "resources/read" => {
@@ -95,5 +108,40 @@ pub async fn dispatch(
         }
         "ping" => JsonRpcResponse::success(id, serde_json::json!({})),
         other => JsonRpcResponse::error(id, -32601, format!("Method not found: {}", other)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn server_info_echoes_supported_version() {
+        let info = server_info(Some("2025-03-26"));
+        assert_eq!(info["protocolVersion"], "2025-03-26");
+    }
+
+    #[test]
+    fn server_info_falls_back_to_latest_for_unknown_version() {
+        let info = server_info(Some("2099-01-01"));
+        assert_eq!(info["protocolVersion"], "2025-03-26");
+    }
+
+    #[test]
+    fn server_info_uses_latest_when_no_version_requested() {
+        let info = server_info(None);
+        assert_eq!(info["protocolVersion"], "2025-03-26");
+    }
+
+    #[test]
+    fn server_info_accepts_legacy_version() {
+        let info = server_info(Some("2024-11-05"));
+        assert_eq!(info["protocolVersion"], "2024-11-05");
+    }
+
+    #[test]
+    fn server_info_includes_prompts_capability() {
+        let info = server_info(None);
+        assert!(info["capabilities"]["prompts"].is_object());
     }
 }
