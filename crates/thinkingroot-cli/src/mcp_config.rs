@@ -19,6 +19,8 @@ pub enum ConfigFormat {
     ClaudeCode,
     /// OpenAI Codex CLI: `~/.codex/config.toml` (TOML format)
     CodexToml,
+    /// Gemini CLI (~/.gemini/settings.json): uses mcpServers key with httpUrl instead of url
+    GeminiCli,
 }
 
 /// A detected AI tool with its resolved config file path.
@@ -142,6 +144,11 @@ fn tool_defs() -> Vec<(&'static str, Box<dyn Fn() -> Option<PathBuf>>, ConfigFor
             ConfigFormat::McpServers,
         ),
         (
+            "Gemini CLI",
+            Box::new(|| dirs::home_dir().map(|d| d.join(".gemini").join("settings.json"))),
+            ConfigFormat::GeminiCli,
+        ),
+        (
             "Claude Code",
             Box::new(|| dirs::home_dir().map(|d| d.join(".claude.json"))),
             ConfigFormat::ClaudeCode,
@@ -161,11 +168,15 @@ pub fn apply_entry(existing: &mut Value, format: ConfigFormat, port: u16) {
         ConfigFormat::McpServers | ConfigFormat::ContinueDev => "mcpServers",
         ConfigFormat::Servers => "servers",
         ConfigFormat::ContextServers => "context_servers",
+        ConfigFormat::GeminiCli => "mcpServers",
         // These formats use dedicated write functions — not apply_entry.
         ConfigFormat::ClaudeCode | ConfigFormat::CodexToml => return,
     };
 
     let entry = match format {
+        ConfigFormat::GeminiCli => json!({
+            "httpUrl": format!("http://localhost:{}/mcp/sse", port)
+        }),
         ConfigFormat::ContextServers => json!({
             "url": format!("http://localhost:{}/mcp/sse", port)
         }),
@@ -186,6 +197,7 @@ pub fn remove_entry(existing: &mut Value, format: ConfigFormat) {
         ConfigFormat::McpServers | ConfigFormat::ContinueDev => "mcpServers",
         ConfigFormat::Servers => "servers",
         ConfigFormat::ContextServers => "context_servers",
+        ConfigFormat::GeminiCli => "mcpServers",
         ConfigFormat::ClaudeCode | ConfigFormat::CodexToml => return,
     };
     if let Some(obj) = existing[servers_key].as_object_mut() {
@@ -555,7 +567,7 @@ pub fn run_connect(
     if all_tools.is_empty() {
         println!("  No supported AI tools detected.");
         println!(
-            "  Supported: Claude Desktop, Claude Code, Cursor, VS Code, Windsurf, Zed, Cline, Continue.dev, Antigravity, Codex"
+            "  Supported: Claude Desktop, Claude Code, Cursor, VS Code, Windsurf, Zed, Cline, Continue.dev, Antigravity, Gemini CLI, Codex"
         );
         return Ok(());
     }
@@ -832,5 +844,35 @@ args = ["serve", "--mcp-stdio", "--path", "/workspace"]
             existing["mcpServers"]["thinkingroot"]["url"],
             "http://localhost:3000/mcp/sse"
         );
+    }
+
+    #[test]
+    fn gemini_cli_entry_uses_http_url_key() {
+        let mut existing = json!({
+            "theme": "Default"
+        });
+        apply_entry(&mut existing, ConfigFormat::GeminiCli, 3000);
+        // Must use "httpUrl", not "url"
+        assert_eq!(
+            existing["mcpServers"]["thinkingroot"]["httpUrl"],
+            "http://localhost:3000/mcp/sse"
+        );
+        // Must NOT have a "url" key
+        assert!(existing["mcpServers"]["thinkingroot"]["url"].is_null());
+        // Other settings preserved
+        assert_eq!(existing["theme"], "Default");
+    }
+
+    #[test]
+    fn gemini_cli_remove_leaves_other_servers() {
+        let mut existing = json!({
+            "mcpServers": {
+                "other": { "httpUrl": "http://example.com" },
+                "thinkingroot": { "httpUrl": "http://localhost:3000/mcp/sse" }
+            }
+        });
+        remove_entry(&mut existing, ConfigFormat::GeminiCli);
+        assert!(existing["mcpServers"]["other"].is_object());
+        assert!(existing["mcpServers"]["thinkingroot"].is_null());
     }
 }
