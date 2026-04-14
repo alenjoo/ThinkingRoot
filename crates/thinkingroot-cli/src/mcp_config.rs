@@ -166,8 +166,7 @@ pub fn apply_entry(existing: &mut Value, format: ConfigFormat, port: u16) {
     };
 
     let entry = match format {
-        ConfigFormat::Servers => json!({
-            "type": "sse",
+        ConfigFormat::ContextServers => json!({
             "url": format!("http://localhost:{}/mcp/sse", port)
         }),
         _ => json!({
@@ -703,6 +702,8 @@ mod tests {
             existing["context_servers"]["thinkingroot"]["url"],
             "http://localhost:3000/mcp/sse"
         );
+        // Zed uses context_servers format which does not use a "type" discriminator
+        assert!(existing["context_servers"]["thinkingroot"]["type"].is_null());
     }
 
     #[test]
@@ -815,6 +816,17 @@ args = ["serve", "--mcp-stdio", "--path", "/workspace"]
     fn mcp_servers_entry_includes_type_sse() {
         let mut existing = json!({});
         apply_entry(&mut existing, ConfigFormat::McpServers, 3000);
+        assert_eq!(existing["mcpServers"]["thinkingroot"]["type"], "sse");
+        assert_eq!(
+            existing["mcpServers"]["thinkingroot"]["url"],
+            "http://localhost:3000/mcp/sse"
+        );
+    }
+
+    #[test]
+    fn continue_dev_entry_includes_type_sse() {
+        let mut existing = json!({});
+        apply_entry(&mut existing, ConfigFormat::ContinueDev, 3000);
         assert_eq!(existing["mcpServers"]["thinkingroot"]["type"], "sse");
         assert_eq!(
             existing["mcpServers"]["thinkingroot"]["url"],
