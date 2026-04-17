@@ -27,6 +27,42 @@
 
 ---
 
+## Install
+
+**Build from source** (works today — Rust 1.85+):
+
+```bash
+git clone https://github.com/DevbyNaveen/ThinkingRoot.git
+cd ThinkingRoot
+cargo build --release
+sudo mv target/release/root /usr/local/bin/root
+```
+
+**Homebrew** *(coming soon)*
+```bash
+brew install thinkingroot
+```
+
+**Cargo** *(coming soon)*
+```bash
+cargo install thinkingroot
+```
+
+**Python SDK** *(coming soon)*
+```bash
+pip install thinkingroot
+```
+
+Then run:
+
+```bash
+root setup        # interactive wizard: pick LLM, set API key, wire MCP
+root compile .    # compile your first knowledge base
+root ask "what does this codebase do?"
+```
+
+---
+
 ## What is ThinkingRoot?
 
 > **Code has GitHub. Models have HuggingFace. Compiled Knowledge has ThinkingRoot.**
