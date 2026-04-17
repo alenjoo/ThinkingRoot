@@ -99,3 +99,4 @@ target/wasm32-unknown-unknown/
 # Benchmarks & Evaluation
 longmemeval-workspace/
 longmemeval-data/
+tests/fixtures/
