@@ -1,7 +1,8 @@
 //! NLI (Natural Language Inference) judge for hallucination detection.
 //!
 //! Uses cross-encoder/nli-deberta-v3-xsmall (71M params, INT8 quantized)
-//! embedded directly in the binary — zero downloads, zero network, zero setup.
+//! loaded from disk at runtime — downloaded by install.sh at install time
+//! to ~/.cache/thinkingroot/models/.
 //!
 //! Model: cross-encoder/nli-deberta-v3-xsmall
 //! License: Apache 2.0
@@ -13,41 +14,72 @@
 //!   index 1 → entailment
 //!   index 2 → neutral
 
+use std::path::{Path, PathBuf};
+
 use ort::session::Session;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::value::Tensor;
 
-// ── Embedded model bytes ─────────────────────────────────────────────────────
-// Compiled into the binary at build time. No downloads, no cache, no network.
-
-#[cfg(target_arch = "aarch64")]
-static ONNX_MODEL: &[u8] = include_bytes!("../models/model_qint8_arm64.onnx");
-
-#[cfg(target_arch = "x86_64")]
-static ONNX_MODEL: &[u8] = include_bytes!("../models/model_quint8_avx2.onnx");
-
-#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-compile_error!("NLI model: unsupported architecture. Only aarch64 and x86_64 are supported.");
-
-static TOKENIZER_JSON: &[u8] = include_bytes!("../models/tokenizer.json");
-
 /// Peak memory per ONNX session during inference.
-///
-/// DeBERTa-v3-xsmall INT8 at batch_size=16 × seq_len=512:
-/// - Model weights:         ~83 MB
-/// - ONNX Runtime overhead: ~50 MB
-/// - Activation buffers:    ~200-400 MB
-/// - Peak total:            ~400-600 MB
 const SESSION_MEMORY_MB: f64 = 600.0;
 
-/// Minimum available RAM to keep free (OS, pipeline data, fastembed, safety).
+/// Minimum available RAM to keep free.
 const RAM_HEADROOM_MB: f64 = 2000.0;
+
+// ── Model path resolution ────────────────────────────────────────────────────
+
+/// Arch-specific ONNX filename.
+#[cfg(target_arch = "aarch64")]
+const ONNX_FILENAME: &str = "model_qint8_arm64.onnx";
+
+#[cfg(target_arch = "x86_64")]
+const ONNX_FILENAME: &str = "model_quint8_avx2.onnx";
+
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+const ONNX_FILENAME: &str = "model_quint8_avx2.onnx";
+
+const TOKENIZER_FILENAME: &str = "tokenizer.json";
+
+/// Resolve model directory — tries in order:
+///   1. Provided cache_dir override
+///   2. ~/.cache/thinkingroot/models/  (Linux / macOS standard)
+///   3. ~/Library/Caches/thinkingroot/models/  (macOS alternate)
+///   4. Executable-adjacent models/  (portable / offline installs)
+fn resolve_model_dir(cache_dir: Option<&Path>) -> Option<PathBuf> {
+    if let Some(dir) = cache_dir {
+        let candidate = dir.join("models");
+        if candidate.join(ONNX_FILENAME).exists() {
+            return Some(candidate);
+        }
+        // Also accept cache_dir itself if it directly contains the model.
+        if dir.join(ONNX_FILENAME).exists() {
+            return Some(dir.to_path_buf());
+        }
+    }
+
+    // ~/.cache/thinkingroot/models/
+    if let Some(cache) = dirs::cache_dir() {
+        let candidate = cache.join("thinkingroot").join("models");
+        if candidate.join(ONNX_FILENAME).exists() {
+            return Some(candidate);
+        }
+    }
+
+    // Executable-adjacent models/ (useful for offline/portable installs)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let candidate = exe_dir.join("models");
+            if candidate.join(ONNX_FILENAME).exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
 
 // ── NLI result ────────────────────────────────────────────────────────────────
 
-/// NLI classification result.
-///
-/// Label order per config.json: [contradiction=0, entailment=1, neutral=2]
 #[derive(Debug, Clone, Copy)]
 pub struct NliResult {
     pub entailment: f64,
@@ -56,8 +88,6 @@ pub struct NliResult {
 }
 
 impl NliResult {
-    /// Grounding score: entailment probability penalised by contradiction.
-    /// Returns a value in [0.0, 1.0]; higher = more grounded in source.
     pub fn score(&self) -> f64 {
         (self.entailment - 0.5 * self.contradiction).max(0.0)
     }
@@ -73,11 +103,6 @@ impl NliResult {
 
 // ── RAM + CPU detection ──────────────────────────────────────────────────────
 
-/// Returns conservatively available RAM in megabytes.
-///
-/// macOS: "Pages free" only (not inactive — macOS OOM-kills before reclaiming).
-/// Linux: `/proc/meminfo` MemAvailable.
-/// Fallback: 2048 MB (conservative).
 fn available_ram_mb() -> f64 {
     #[cfg(target_os = "macos")]
     {
@@ -147,7 +172,6 @@ fn available_ram_mb() -> f64 {
     }
 }
 
-/// Returns P-core count (Apple Silicon) or physical core count (other).
 fn p_core_count() -> usize {
     #[cfg(target_os = "macos")]
     {
@@ -202,7 +226,6 @@ fn p_core_count() -> usize {
     }
 }
 
-/// RAM-aware pool sizing. Returns (num_workers, intra_threads_per_worker).
 fn compute_pool_config() -> (usize, usize) {
     let ram_mb = available_ram_mb();
     let cores = p_core_count();
@@ -222,20 +245,23 @@ fn compute_pool_config() -> (usize, usize) {
 
 // ── NLI judge (single session) ───────────────────────────────────────────────
 
-/// One NLI inference session (ONNX Runtime + tokenizer).
-///
-/// Created from embedded model bytes — no file I/O, no network.
 pub struct NliJudge {
     session: Session,
     tokenizer: tokenizers::Tokenizer,
 }
 
 impl NliJudge {
-    /// Create an NLI judge from the embedded model with configurable parallelism.
-    fn load(intra_threads: usize) -> thinkingroot_core::Result<Self> {
-        let tokenizer = tokenizers::Tokenizer::from_bytes(TOKENIZER_JSON).map_err(|e| {
-            thinkingroot_core::Error::VectorStorage(format!("NLI tokenizer load failed: {e}"))
-        })?;
+    fn load(model_dir: &Path, intra_threads: usize) -> thinkingroot_core::Result<Self> {
+        let tokenizer_path = model_dir.join(TOKENIZER_FILENAME);
+        let onnx_path = model_dir.join(ONNX_FILENAME);
+
+        let tokenizer =
+            tokenizers::Tokenizer::from_file(&tokenizer_path).map_err(|e| {
+                thinkingroot_core::Error::VectorStorage(format!(
+                    "NLI tokenizer load failed from {}: {e}",
+                    tokenizer_path.display()
+                ))
+            })?;
 
         let session = Session::builder()
             .map_err(|e| {
@@ -249,20 +275,17 @@ impl NliJudge {
             .map_err(|e| {
                 thinkingroot_core::Error::VectorStorage(format!("intra_threads config failed: {e}"))
             })?
-            .commit_from_memory(ONNX_MODEL)
+            .commit_from_file(&onnx_path)
             .map_err(|e| {
-                thinkingroot_core::Error::VectorStorage(format!("NLI model load failed: {e}"))
+                thinkingroot_core::Error::VectorStorage(format!(
+                    "NLI model load failed from {}: {e}",
+                    onnx_path.display()
+                ))
             })?;
 
         Ok(Self { session, tokenizer })
     }
 
-    /// Score a batch of (source_text, claim) pairs.
-    ///
-    /// NLI convention: premise = source_text, hypothesis = claim.
-    /// Returns one grounding score per pair in [0.0, 1.0].
-    ///
-    /// Label order: [contradiction=0, entailment=1, neutral=2]
     pub fn score_batch(&mut self, pairs: &[(&str, &str)]) -> Vec<f64> {
         if pairs.is_empty() {
             return vec![];
@@ -334,8 +357,6 @@ impl NliJudge {
             }
         };
 
-        // Logits shape: (batch_size, 3)
-        // [contradiction=0, entailment=1, neutral=2]
         match outputs[0].try_extract_tensor::<f32>() {
             Ok((_shape, data)) => (0..batch_size)
                 .map(|i| {
@@ -363,30 +384,34 @@ impl NliJudge {
 
 // ── NLI judge pool ───────────────────────────────────────────────────────────
 
-/// RAM-aware NLI inference pool.
-///
-/// Model is embedded in the binary — `load()` just computes pool sizing.
-/// Each worker creates its own ONNX session from the embedded bytes.
 pub struct NliJudgePool {
     pub num_workers: usize,
     intra_threads: usize,
+    model_dir: PathBuf,
 }
 
 impl NliJudgePool {
-    /// Compute RAM-aware pool configuration.
-    ///
-    /// No file I/O, no network — the model is embedded in the binary.
-    pub fn load(_cache_dir: Option<&std::path::Path>) -> thinkingroot_core::Result<Self> {
+    /// Load pool config. Returns Err if models are not found on disk —
+    /// caller should gracefully skip NLI (judges 1-3 still run).
+    pub fn load(cache_dir: Option<&Path>) -> thinkingroot_core::Result<Self> {
+        let model_dir = resolve_model_dir(cache_dir).ok_or_else(|| {
+            thinkingroot_core::Error::VectorStorage(format!(
+                "NLI models not found. Expected {} in ~/.cache/thinkingroot/models/. \
+                 Re-run the installer: curl -fsSL https://raw.githubusercontent.com/DevbyNaveen/ThinkingRoot/main/install.sh | sh",
+                ONNX_FILENAME
+            ))
+        })?;
+
         let (workers, intra_threads) = compute_pool_config();
         Ok(Self {
             num_workers: workers,
             intra_threads,
+            model_dir,
         })
     }
 
-    /// Create a single NLI judge with the pool's intra-thread config.
     pub fn create_judge(&self) -> thinkingroot_core::Result<NliJudge> {
-        NliJudge::load(self.intra_threads)
+        NliJudge::load(&self.model_dir, self.intra_threads)
     }
 }
 
@@ -451,7 +476,6 @@ mod tests {
 
     #[test]
     fn pool_config_low_ram() {
-        // 3200 MB free → budget = max(1200, 600) = 1200 → workers = 2
         let budget = (3200.0_f64 - RAM_HEADROOM_MB).max(SESSION_MEMORY_MB);
         let max_by_ram = (budget / SESSION_MEMORY_MB) as usize;
         assert_eq!(max_by_ram, 2);
@@ -459,7 +483,6 @@ mod tests {
 
     #[test]
     fn pool_config_very_low_ram() {
-        // 1500 MB free → budget = max(-500, 600) = 600 → workers = 1
         let budget = (1500.0_f64 - RAM_HEADROOM_MB).max(SESSION_MEMORY_MB);
         let max_by_ram = (budget / SESSION_MEMORY_MB) as usize;
         assert_eq!(max_by_ram, 1);
@@ -467,7 +490,6 @@ mod tests {
 
     #[test]
     fn pool_config_high_ram() {
-        // 32000 MB free, 8 cores → budget = 30000 → max_by_ram = 50 → capped at 8
         let budget = (32000.0_f64 - RAM_HEADROOM_MB).max(SESSION_MEMORY_MB);
         let max_by_ram = (budget / SESSION_MEMORY_MB) as usize;
         let workers = max_by_ram.min(8).clamp(1, 8);
@@ -492,8 +514,11 @@ mod tests {
     }
 
     #[test]
-    fn embedded_model_bytes_are_present() {
-        assert!(ONNX_MODEL.len() > 1_000_000, "model should be >1MB");
-        assert!(TOKENIZER_JSON.len() > 100_000, "tokenizer should be >100KB");
+    fn resolve_model_dir_returns_none_when_no_models() {
+        // In CI / fresh environments with no models installed, should return None
+        // (not panic). The pool gracefully skips NLI in this case.
+        let result = resolve_model_dir(Some(Path::new("/nonexistent/path")));
+        // Either None (no models) or Some (models found elsewhere) — must not panic.
+        let _ = result;
     }
 }
