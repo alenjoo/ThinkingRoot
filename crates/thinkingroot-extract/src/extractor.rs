@@ -330,10 +330,9 @@ impl Extractor {
                                 .first()
                                 .map(|c| c != &work.original_content)
                                 .unwrap_or(false);
-                        if needs_original_key {
-                            if let Err(e) = cache.put(&work.original_content, &extraction_result) {
-                                tracing::warn!("failed to write original cache entry: {e}");
-                            }
+                        if needs_original_key
+                            && let Err(e) = cache.put(&work.original_content, &extraction_result) {
+                            tracing::warn!("failed to write original cache entry: {e}");
                         }
                     }
 
@@ -408,12 +407,11 @@ impl Extractor {
                 .with_confidence(ext_claim.confidence)
                 .with_extraction_tier(ext_claim.extraction_tier);
             // Wire event_date: convert ISO string → DateTime<Utc>.
-            if let Some(ref date_str) = ext_claim.event_date {
-                if let Ok(nd) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
-                    if let Some(dt) = nd.and_hms_opt(12, 0, 0).map(|ndt| ndt.and_utc()) {
-                        claim = claim.with_event_date(dt);
-                    }
-                }
+            if let Some(ref date_str) = ext_claim.event_date
+                && let Ok(nd) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
+                && let Some(dt) = nd.and_hms_opt(12, 0, 0).map(|ndt| ndt.and_utc())
+            {
+                claim = claim.with_event_date(dt);
             }
             if !ext_claim.entities.is_empty() {
                 output
@@ -508,82 +506,6 @@ fn split_to_token_budget(content: &str, max_tokens: usize) -> Vec<String> {
     }
 }
 
-/// Recursively extract from content, splitting at line boundaries if truncated.
-/// Depth limit of 3 prevents infinite recursion on pathological inputs.
-/// `known_entities_section` is passed unchanged through all recursive splits so
-/// every sub-chunk benefits from the same graph context.
-fn extract_with_split(
-    llm: SharedLlm,
-    content: String,
-    context: String,
-    known_entities_section: String,
-    depth: u32,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ExtractionResult>> + Send>> {
-    Box::pin(async move {
-        match llm
-            .extract_with_graph_context(&content, &context, &known_entities_section)
-            .await
-        {
-            Ok(result) => Ok(result),
-
-            Err(thinkingroot_core::Error::TruncatedOutput {
-                ref provider,
-                ref model,
-            }) if depth < 3 => {
-                let lines: Vec<&str> = content.lines().collect();
-                if lines.len() < 2 {
-                    tracing::warn!(
-                        "chunk from {provider}/{model} cannot be split further — skipping"
-                    );
-                    return Ok(ExtractionResult {
-                        claims: vec![],
-                        entities: vec![],
-                        relations: vec![],
-                    });
-                }
-
-                let mid = lines.len() / 2;
-                let first_half = lines[..mid].join("\n");
-                let second_half = lines[mid..].join("\n");
-
-                tracing::info!(
-                    "output truncated by {provider}/{model}, splitting chunk at line {mid} (depth={depth})"
-                );
-
-                let llm1 = Arc::clone(&llm);
-                let llm2 = Arc::clone(&llm);
-                let ctx1 = context.clone();
-                let ctx2 = context.clone();
-                let gctx1 = known_entities_section.clone();
-                let gctx2 = known_entities_section.clone();
-
-                let (r1, r2) = tokio::try_join!(
-                    extract_with_split(llm1, first_half, ctx1, gctx1, depth + 1),
-                    extract_with_split(llm2, second_half, ctx2, gctx2, depth + 1),
-                )?;
-
-                Ok(ExtractionResult {
-                    claims: r1.claims.into_iter().chain(r2.claims).collect(),
-                    entities: r1.entities.into_iter().chain(r2.entities).collect(),
-                    relations: r1.relations.into_iter().chain(r2.relations).collect(),
-                })
-            }
-
-            Err(thinkingroot_core::Error::TruncatedOutput { provider, model }) => {
-                tracing::error!(
-                    "chunk still truncated after max splits for {provider}/{model} — skipping"
-                );
-                Ok(ExtractionResult {
-                    claims: vec![],
-                    entities: vec![],
-                    relations: vec![],
-                })
-            }
-
-            Err(e) => Err(e),
-        }
-    })
-}
 
 impl ExtractionOutput {
     fn merge(&mut self, other: ExtractionOutput) {
