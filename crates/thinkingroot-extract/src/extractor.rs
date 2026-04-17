@@ -360,6 +360,10 @@ impl Extractor {
             pf(total_chunks, total_chunks, "");
         }
 
+        // Deduplicate claims by normalized statement — prevents graph bloat from
+        // overlapping chunks extracting the same fact.
+        dedup_claims(&mut output);
+
         tracing::info!(
             "extraction complete: {} claims, {} entities, {} relations \
              from {} sources ({} chunks, {} cache hits, {} structural)",
@@ -507,6 +511,52 @@ fn split_to_token_budget(content: &str, max_tokens: usize) -> Vec<String> {
 }
 
 
+/// Deduplicate claims by normalized statement text.
+///
+/// Normalization: lowercase + strip trailing sentence punctuation + collapse whitespace.
+/// When duplicates found: the claim with the highest confidence survives.
+///
+/// Called once, after all batch LLM calls complete, before returning ExtractionOutput.
+/// Prevents graph bloat when overlapping chunks extract the same fact.
+fn dedup_claims(output: &mut ExtractionOutput) {
+    fn normalize(s: &str) -> String {
+        s.to_lowercase()
+            .trim_end_matches(['.', '!', '?'])
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    // First pass: for each normalized key, find the index of the highest-confidence claim.
+    let mut best: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (i, claim) in output.claims.iter().enumerate() {
+        let key = normalize(&claim.statement);
+        best.entry(key)
+            .and_modify(|prev_idx| {
+                if claim.confidence.value() > output.claims[*prev_idx].confidence.value() {
+                    *prev_idx = i;
+                }
+            })
+            .or_insert(i);
+    }
+
+    // Collect the winning indices into a set.
+    let keep: std::collections::HashSet<usize> = best.into_values().collect();
+
+    let before = output.claims.len();
+    let mut idx = 0usize;
+    output.claims.retain(|_| {
+        let keep_this = keep.contains(&idx);
+        idx += 1;
+        keep_this
+    });
+
+    let removed = before - output.claims.len();
+    if removed > 0 {
+        tracing::debug!("dedup_claims: removed {removed} duplicate claims, kept {}", output.claims.len());
+    }
+}
+
 impl ExtractionOutput {
     fn merge(&mut self, other: ExtractionOutput) {
         self.claims.extend(other.claims);
@@ -581,6 +631,58 @@ fn parse_relation_type(s: &str) -> Option<RelationType> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deduplicate_claims_by_normalized_statement() {
+        use thinkingroot_core::types::{Claim, ClaimType, SourceId, WorkspaceId};
+
+        let src = SourceId::new();
+        let ws = WorkspaceId::new();
+
+        let claim_a = Claim::new("Rust is fast", ClaimType::Fact, src, ws)
+            .with_confidence(0.8);
+        let claim_b = Claim::new("Rust is fast", ClaimType::Fact, src, ws)
+            .with_confidence(0.9);
+        let claim_c = Claim::new("Go is simple", ClaimType::Fact, src, ws)
+            .with_confidence(0.7);
+
+        let mut output = ExtractionOutput {
+            claims: vec![claim_a, claim_b, claim_c],
+            ..Default::default()
+        };
+
+        dedup_claims(&mut output);
+
+        assert_eq!(output.claims.len(), 2, "duplicate claim must be removed");
+        let rust_claim = output
+            .claims
+            .iter()
+            .find(|c| c.statement == "Rust is fast")
+            .unwrap();
+        assert!(
+            (rust_claim.confidence.value() - 0.9).abs() < 0.001,
+            "surviving claim must have max confidence 0.9, got {}",
+            rust_claim.confidence.value()
+        );
+    }
+
+    #[test]
+    fn dedup_claims_normalizes_case_and_trailing_punctuation() {
+        use thinkingroot_core::types::{Claim, ClaimType, SourceId, WorkspaceId};
+
+        let src = SourceId::new();
+        let ws = WorkspaceId::new();
+
+        let claims = vec![
+            Claim::new("Rust is FAST.", ClaimType::Fact, src, ws).with_confidence(0.8),
+            Claim::new("rust is fast", ClaimType::Fact, src, ws).with_confidence(0.9),
+        ];
+
+        let mut output = ExtractionOutput { claims, ..Default::default() };
+        dedup_claims(&mut output);
+
+        assert_eq!(output.claims.len(), 1, "case/punctuation variants must be deduped");
+    }
 
     #[test]
     fn batch_size_constant_is_six() {
