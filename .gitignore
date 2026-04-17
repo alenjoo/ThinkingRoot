@@ -75,7 +75,6 @@ docs/
 # Local UI/Branding experiments (not for repo)
 logo_concepts.html
 crates/thinkingroot-serve/src/graph.html
-crates/thinkingroot-serve/src/galaxy.html
 
 # NLI model binaries — too large for git, use Git LFS or download separately
 crates/thinkingroot-ground/models/
