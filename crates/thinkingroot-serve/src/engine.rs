@@ -5,8 +5,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 
-pub use crate::pipeline::PipelineResult;
 use crate::graph_cache::{CachedClaim, KnowledgeGraph, RawGraphData};
+pub use crate::pipeline::PipelineResult;
 use thinkingroot_core::{Config, Error, Result};
 use thinkingroot_graph::StorageEngine;
 use thinkingroot_verify::Verifier;
@@ -449,8 +449,7 @@ impl QueryEngine {
                         .claim_type
                         .as_ref()
                         .is_none_or(|t| t.eq_ignore_ascii_case(&c.claim_type));
-                    let conf_ok =
-                        filter.min_confidence.is_none_or(|min| c.confidence >= min);
+                    let conf_ok = filter.min_confidence.is_none_or(|min| c.confidence >= min);
                     type_ok && conf_ok
                 })
                 .map(cached_claim_to_info)
@@ -532,7 +531,7 @@ impl QueryEngine {
     /// Used by the high-performance WebGL galaxy viewer.
     pub async fn get_galaxy_map(&self, ws: &str) -> Result<GalaxyMap> {
         let handle = self.get_workspace(ws)?;
-        
+
         let coords_2d = {
             let storage = handle.storage.lock().await;
             storage.vector.project_to_2d()
@@ -549,9 +548,10 @@ impl QueryEngine {
                 let claim_count = cache.entity_claim_count(&e.id);
                 // Z-axis: Density of Truth. Logarithmic scaling so outliers don't break the map.
                 let z = (claim_count as f32 + 1.0).ln() * 50.0;
-                let created_at = e.id.parse::<thinkingroot_core::types::EntityId>()
-                    .map(|id| id.timestamp_ms())
-                    .unwrap_or(0);
+                let created_at =
+                    e.id.parse::<thinkingroot_core::types::EntityId>()
+                        .map(|id| id.timestamp_ms())
+                        .unwrap_or(0);
 
                 nodes.push(GalaxyNode {
                     id: e.id.to_string(),
@@ -569,7 +569,10 @@ impl QueryEngine {
         let mut links = Vec::new();
         for r in cache.all_relations() {
             // Re-map name back to ID for the links because frontend graphs prefer ID-based links
-            if let (Some(src), Some(tgt)) = (cache.find_entity_by_name(&r.from_name), cache.find_entity_by_name(&r.to_name)) {
+            if let (Some(src), Some(tgt)) = (
+                cache.find_entity_by_name(&r.from_name),
+                cache.find_entity_by_name(&r.to_name),
+            ) {
                 links.push(GalaxyLink {
                     source: src.id.clone(),
                     target: tgt.id.clone(),
@@ -960,12 +963,23 @@ impl QueryEngine {
             }
         }
 
-        entity_hits.sort_by(|a, b| b.relevance.partial_cmp(&a.relevance).unwrap_or(std::cmp::Ordering::Equal));
-        claim_hits.sort_by(|a, b| b.relevance.partial_cmp(&a.relevance).unwrap_or(std::cmp::Ordering::Equal));
+        entity_hits.sort_by(|a, b| {
+            b.relevance
+                .partial_cmp(&a.relevance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        claim_hits.sort_by(|a, b| {
+            b.relevance
+                .partial_cmp(&a.relevance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         entity_hits.truncate(top_k);
         claim_hits.truncate(top_k);
 
-        Ok(SearchResult { entities: entity_hits, claims: claim_hits })
+        Ok(SearchResult {
+            entities: entity_hits,
+            claims: claim_hits,
+        })
     }
 
     /// List tracked contradictions in the workspace.
@@ -1238,7 +1252,7 @@ impl QueryEngine {
         session: &crate::intelligence::session::SessionContext,
     ) -> Result<String> {
         use crate::intelligence::react::ReActEngine;
-        use crate::intelligence::router::{classify_query, QueryPath};
+        use crate::intelligence::router::{QueryPath, classify_query};
 
         const FAST_SYNTHESIS_PROMPT: &str = "\
 You are a precise personal memory assistant. \
@@ -1281,9 +1295,8 @@ Rules: \
                     if notes.is_empty() {
                         notes.push_str("No relevant memory found.\n");
                     }
-                    let user_msg = format!(
-                        "## Retrieved Memory Notes\n\n{notes}\n\n## Question\n\n{query}"
-                    );
+                    let user_msg =
+                        format!("## Retrieved Memory Notes\n\n{notes}\n\n## Question\n\n{query}");
                     if let Ok(answer) = llm_client.chat(FAST_SYNTHESIS_PROMPT, &user_msg).await {
                         return Ok(answer);
                     }
@@ -1474,7 +1487,10 @@ Rules: \
                 session.turn_count
             };
             let storage = handle.storage.lock().await;
-            if let Err(e) = storage.graph.record_turn(session_id, turn_number, &accepted_ids) {
+            if let Err(e) = storage
+                .graph
+                .record_turn(session_id, turn_number, &accepted_ids)
+            {
                 tracing::warn!("turn calendar record failed (non-fatal): {e}");
             }
         }
@@ -1542,10 +1558,7 @@ Rules: \
     }
 
     /// Return the LLM client for a workspace, if one was successfully initialised.
-    pub fn workspace_llm(
-        &self,
-        ws: &str,
-    ) -> Option<Arc<thinkingroot_extract::llm::LlmClient>> {
+    pub fn workspace_llm(&self, ws: &str) -> Option<Arc<thinkingroot_extract::llm::LlmClient>> {
         self.workspaces.get(ws).and_then(|h| h.llm.clone())
     }
 

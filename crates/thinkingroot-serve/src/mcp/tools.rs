@@ -243,13 +243,21 @@ pub async fn handle_call(
             let question = match arguments.get("question").and_then(|v| v.as_str()) {
                 Some(q) => q.to_string(),
                 None => {
-                    return JsonRpcResponse::error(id, -32602, "Missing 'question' argument".to_string());
+                    return JsonRpcResponse::error(
+                        id,
+                        -32602,
+                        "Missing 'question' argument".to_string(),
+                    );
                 }
             };
             let session_scope: Vec<String> = arguments
                 .get("session_scope")
                 .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
             let question_date = arguments
                 .get("question_date")
@@ -270,13 +278,19 @@ pub async fn handle_call(
                 match crate::intelligence::router::classify_query(&question, &tmp_session) {
                     crate::intelligence::router::QueryPath::Agentic => {
                         let q = question.to_lowercase();
-                        if q.contains(" ago") || q.contains("last ") || q.contains("when ") || q.contains("how many days") {
+                        if q.contains(" ago")
+                            || q.contains("last ")
+                            || q.contains("when ")
+                            || q.contains("how many days")
+                        {
                             "temporal-reasoning".to_string()
                         } else {
                             "multi-session".to_string()
                         }
                     }
-                    crate::intelligence::router::QueryPath::Fast => "single-session-user".to_string(),
+                    crate::intelligence::router::QueryPath::Fast => {
+                        "single-session-user".to_string()
+                    }
                 }
             };
 
@@ -285,7 +299,7 @@ pub async fn handle_call(
             let sessions_dir = sessions_dir_for(engine, ws);
             let llm = engine.workspace_llm(ws);
 
-            use crate::intelligence::synthesizer::{ask as synth_ask, AskRequest};
+            use crate::intelligence::synthesizer::{AskRequest, ask as synth_ask};
             let req = AskRequest {
                 workspace: ws,
                 question: &question,
@@ -330,7 +344,10 @@ pub async fn handle_call(
             let session_ctx = session_snapshot.unwrap_or_else(|| {
                 crate::intelligence::session::SessionContext::new(session_id, ws)
             });
-            match engine.search_with_routing(ws, query, top_k, &session_ctx).await {
+            match engine
+                .search_with_routing(ws, query, top_k, &session_ctx)
+                .await
+            {
                 Ok(content) => JsonRpcResponse::success(
                     id,
                     serde_json::json!({ "content": [{ "type": "text", "text": content }] }),
@@ -358,7 +375,10 @@ pub async fn handle_call(
                 limit: Some(100),
                 offset: None,
             };
-            match engine.list_claims_branched(ws, filter, active_branch.as_deref()).await {
+            match engine
+                .list_claims_branched(ws, filter, active_branch.as_deref())
+                .await
+            {
                 Ok(claims) => {
                     let content = serde_json::to_string_pretty(&claims).unwrap_or_default();
                     JsonRpcResponse::success(
@@ -386,7 +406,10 @@ pub async fn handle_call(
                     );
                 }
             };
-            match engine.get_relations_branched(ws, entity, active_branch.as_deref()).await {
+            match engine
+                .get_relations_branched(ws, entity, active_branch.as_deref())
+                .await
+            {
                 Ok(rels) => {
                     let content = serde_json::to_string_pretty(&rels).unwrap_or_default();
                     JsonRpcResponse::success(
@@ -651,7 +674,10 @@ pub async fn handle_call(
                 let store = sessions.lock().await;
                 store.get(session_id).and_then(|s| s.active_branch.clone())
             };
-            match engine.get_workspace_brief_branched(ws, active_branch.as_deref()).await {
+            match engine
+                .get_workspace_brief_branched(ws, active_branch.as_deref())
+                .await
+            {
                 Ok(summary) => {
                     let text = compressor::format_workspace_brief(
                         &summary.workspace,
@@ -677,7 +703,7 @@ pub async fn handle_call(
                 }
                 Err(e) => JsonRpcResponse::error(id, -32603, e.to_string()),
             }
-        },
+        }
 
         // `investigate` — intent-aware deep retrieval with session delta delivery.
         // The planner classifies the query intent and routes to the right graph method.
@@ -720,7 +746,10 @@ pub async fn handle_call(
 
             let text = match plan.steps.first() {
                 Some(PlanStep::FindReverseDeps(name)) => {
-                    match engine.get_entity_context_branched(ws, name, active_branch.as_deref()).await {
+                    match engine
+                        .get_entity_context_branched(ws, name, active_branch.as_deref())
+                        .await
+                    {
                         Ok(Some(ctx)) => {
                             let mut out = format!("## Reverse dependencies of {name}\n");
                             if ctx.incoming_relations.is_empty() {
@@ -737,7 +766,10 @@ pub async fn handle_call(
                     }
                 }
                 Some(PlanStep::GetNeighborhood(name)) => {
-                    match engine.get_entity_context_branched(ws, name, active_branch.as_deref()).await {
+                    match engine
+                        .get_entity_context_branched(ws, name, active_branch.as_deref())
+                        .await
+                    {
                         Ok(Some(ctx)) => {
                             let mut out = format!("## Neighborhood of {name}\n");
                             for (t, rel, str) in &ctx.outgoing_relations {
@@ -754,7 +786,10 @@ pub async fn handle_call(
                 }
                 _ => {
                     // Full entity context with session-aware compression.
-                    match engine.get_entity_context_branched(ws, &entity_name, active_branch.as_deref()).await {
+                    match engine
+                        .get_entity_context_branched(ws, &entity_name, active_branch.as_deref())
+                        .await
+                    {
                         Ok(None) => {
                             return JsonRpcResponse::error(
                                 id,
@@ -889,7 +924,13 @@ pub async fn handle_call(
             };
 
             match engine
-                .contribute_claims(ws, session_id, active_branch.as_deref(), agent_claims, sessions)
+                .contribute_claims(
+                    ws,
+                    session_id,
+                    active_branch.as_deref(),
+                    agent_claims,
+                    sessions,
+                )
                 .await
             {
                 Ok(result) => {

@@ -172,8 +172,15 @@ pub fn expand_query_static(question: &str, category: &str) -> Vec<String> {
                 .take_while(|w| {
                     !matches!(
                         **w,
-                        "do" | "did" | "have" | "has" | "are" | "were"
-                            | "in" | "total" | "i" | "we"
+                        "do" | "did"
+                            | "have"
+                            | "has"
+                            | "are"
+                            | "were"
+                            | "in"
+                            | "total"
+                            | "i"
+                            | "we"
                     )
                 })
                 .copied()
@@ -186,21 +193,17 @@ pub fn expand_query_static(question: &str, category: &str) -> Vec<String> {
 
     if category == "temporal-reasoning" {
         let stop: HashSet<&str> = [
-            "how", "many", "days", "weeks", "months", "ago", "did", "i", "when",
-            "what", "is", "the", "order", "of", "a", "an", "my", "was", "first",
-            "last", "between", "passed", "since", "attend", "attended", "go", "went",
-            "visit", "visited", "buy", "bought", "start", "started", "finish",
-            "finished", "which", "three", "two", "from", "to", "and", "in", "at",
-            "on", "that", "this", "have", "had", "do", "does", "be", "been",
-            "for", "with", "it", "or", "if", "up", "about",
+            "how", "many", "days", "weeks", "months", "ago", "did", "i", "when", "what", "is",
+            "the", "order", "of", "a", "an", "my", "was", "first", "last", "between", "passed",
+            "since", "attend", "attended", "go", "went", "visit", "visited", "buy", "bought",
+            "start", "started", "finish", "finished", "which", "three", "two", "from", "to", "and",
+            "in", "at", "on", "that", "this", "have", "had", "do", "does", "be", "been", "for",
+            "with", "it", "or", "if", "up", "about",
         ]
         .into_iter()
         .collect();
 
-        let event_words: Vec<&str> = q
-            .split_whitespace()
-            .filter(|w| !stop.contains(w))
-            .collect();
+        let event_words: Vec<&str> = q.split_whitespace().filter(|w| !stop.contains(w)).collect();
 
         if event_words.len() >= 2 {
             let half = event_words.len() / 2;
@@ -214,11 +217,44 @@ pub fn expand_query_static(question: &str, category: &str) -> Vec<String> {
 
     if category == "single-session-assistant" {
         let stop: HashSet<&str> = [
-            "i'm", "checking", "our", "previous", "chat", "about", "can", "you",
-            "remind", "me", "what", "was", "the", "tell", "going", "back", "to",
-            "conversation", "wondering", "if", "could", "a", "an", "my", "i",
-            "we", "of", "in", "at", "on", "that", "this", "had", "have", "been",
-            "is", "were", "are",
+            "i'm",
+            "checking",
+            "our",
+            "previous",
+            "chat",
+            "about",
+            "can",
+            "you",
+            "remind",
+            "me",
+            "what",
+            "was",
+            "the",
+            "tell",
+            "going",
+            "back",
+            "to",
+            "conversation",
+            "wondering",
+            "if",
+            "could",
+            "a",
+            "an",
+            "my",
+            "i",
+            "we",
+            "of",
+            "in",
+            "at",
+            "on",
+            "that",
+            "this",
+            "had",
+            "have",
+            "been",
+            "is",
+            "were",
+            "are",
         ]
         .into_iter()
         .collect();

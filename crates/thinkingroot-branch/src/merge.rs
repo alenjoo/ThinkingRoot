@@ -149,10 +149,16 @@ pub async fn execute_merge(
                 // Collect vector IDs *before* removal so we can purge the vector index.
                 let mut vec_ids: Vec<String> = Vec::new();
                 for (sid, _, _) in main_graph.find_sources_by_uri(&uri).unwrap_or_default() {
-                    for cid in main_graph.get_claim_ids_for_source(&sid).unwrap_or_default() {
+                    for cid in main_graph
+                        .get_claim_ids_for_source(&sid)
+                        .unwrap_or_default()
+                    {
                         vec_ids.push(format!("claim:{cid}"));
                     }
-                    for eid in main_graph.get_entity_ids_for_source(&sid).unwrap_or_default() {
+                    for eid in main_graph
+                        .get_entity_ids_for_source(&sid)
+                        .unwrap_or_default()
+                    {
                         vec_ids.push(format!("entity:{eid}"));
                     }
                 }
@@ -171,8 +177,7 @@ pub async fn execute_merge(
                         if let Ok(mut main_vec) =
                             thinkingroot_graph::vector::VectorStore::init(&main_data_dir).await
                         {
-                            let id_refs: Vec<&str> =
-                                vec_ids.iter().map(|s| s.as_str()).collect();
+                            let id_refs: Vec<&str> = vec_ids.iter().map(|s| s.as_str()).collect();
                             main_vec.remove_by_ids(&id_refs);
                             if let Err(e) = main_vec.save() {
                                 tracing::warn!("vector purge save failed (non-fatal): {e}");

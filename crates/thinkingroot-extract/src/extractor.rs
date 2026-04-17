@@ -412,7 +412,8 @@ impl Extractor {
                                 .map(|c| c != &work.original_content)
                                 .unwrap_or(false);
                         if needs_original_key
-                            && let Err(e) = cache.put(&work.original_content, &extraction_result) {
+                            && let Err(e) = cache.put(&work.original_content, &extraction_result)
+                        {
                             tracing::warn!("failed to write original cache entry: {e}");
                         }
                     }
@@ -599,7 +600,6 @@ fn split_to_token_budget(content: &str, max_tokens: usize) -> Vec<String> {
     }
 }
 
-
 /// Deduplicate claims by normalized statement text.
 ///
 /// Normalization: lowercase + strip trailing sentence punctuation + collapse whitespace.
@@ -642,7 +642,10 @@ fn dedup_claims(output: &mut ExtractionOutput) {
 
     let removed = before - output.claims.len();
     if removed > 0 {
-        tracing::debug!("dedup_claims: removed {removed} duplicate claims, kept {}", output.claims.len());
+        tracing::debug!(
+            "dedup_claims: removed {removed} duplicate claims, kept {}",
+            output.claims.len()
+        );
     }
 }
 
@@ -728,12 +731,9 @@ mod tests {
         let src = SourceId::new();
         let ws = WorkspaceId::new();
 
-        let claim_a = Claim::new("Rust is fast", ClaimType::Fact, src, ws)
-            .with_confidence(0.8);
-        let claim_b = Claim::new("Rust is fast", ClaimType::Fact, src, ws)
-            .with_confidence(0.9);
-        let claim_c = Claim::new("Go is simple", ClaimType::Fact, src, ws)
-            .with_confidence(0.7);
+        let claim_a = Claim::new("Rust is fast", ClaimType::Fact, src, ws).with_confidence(0.8);
+        let claim_b = Claim::new("Rust is fast", ClaimType::Fact, src, ws).with_confidence(0.9);
+        let claim_c = Claim::new("Go is simple", ClaimType::Fact, src, ws).with_confidence(0.7);
 
         let mut output = ExtractionOutput {
             claims: vec![claim_a, claim_b, claim_c],
@@ -767,15 +767,25 @@ mod tests {
             Claim::new("rust is fast", ClaimType::Fact, src, ws).with_confidence(0.9),
         ];
 
-        let mut output = ExtractionOutput { claims, ..Default::default() };
+        let mut output = ExtractionOutput {
+            claims,
+            ..Default::default()
+        };
         dedup_claims(&mut output);
 
-        assert_eq!(output.claims.len(), 1, "case/punctuation variants must be deduped");
+        assert_eq!(
+            output.claims.len(),
+            1,
+            "case/punctuation variants must be deduped"
+        );
     }
 
     #[test]
     fn batch_size_constant_is_six() {
-        assert_eq!(EXTRACTION_BATCH_SIZE, 6, "batch size must be 6 — see perf analysis");
+        assert_eq!(
+            EXTRACTION_BATCH_SIZE, 6,
+            "batch size must be 6 — see perf analysis"
+        );
     }
 
     #[test]

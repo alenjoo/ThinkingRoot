@@ -368,7 +368,10 @@ async fn main() -> anyhow::Result<()> {
     // MCP client (Claude Code, Cursor, Codex, Windsurf, Zed, VS Code).
     let is_mcp_stdio = matches!(
         &cli.command,
-        Some(Commands::Serve { mcp_stdio: true, .. })
+        Some(Commands::Serve {
+            mcp_stdio: true,
+            ..
+        })
     );
 
     let filter = if cli.verbose {
@@ -388,7 +391,7 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(filter)
         .with_target(false)
         .without_time()
-        .with_writer(std::io::stderr)  // always write to stderr, never stdout
+        .with_writer(std::io::stderr) // always write to stderr, never stdout
         .init();
 
     match cli.command {
@@ -404,7 +407,12 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Query { query, path, top_k }) => {
             run_query(&path, &query, top_k).await?;
         }
-        Some(Commands::Ask { first, rest, path, date }) => {
+        Some(Commands::Ask {
+            first,
+            rest,
+            path,
+            date,
+        }) => {
             // Accept both:
             //   root ask "question"
             //   root ask llm "question"
@@ -416,7 +424,9 @@ async fn main() -> anyhow::Result<()> {
                 format!("{} {}", first, rest.join(" "))
             };
             if question.trim().is_empty() {
-                anyhow::bail!("Please provide a question. Example: root ask \"what did I do last week?\"");
+                anyhow::bail!(
+                    "Please provide a question. Example: root ask \"what did I do last week?\""
+                );
             }
             run_query_llm(&path, &question, date.as_deref()).await?;
         }
@@ -561,8 +571,21 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Update) => {
             update_cmd::run_update().await?;
         }
-        Some(Commands::Eval { dataset, path, limit, category, judge_deployment }) => {
-            eval_cmd::run_eval(&dataset, &path, limit, category.as_deref(), judge_deployment.as_deref()).await?;
+        Some(Commands::Eval {
+            dataset,
+            path,
+            limit,
+            category,
+            judge_deployment,
+        }) => {
+            eval_cmd::run_eval(
+                &dataset,
+                &path,
+                limit,
+                category.as_deref(),
+                judge_deployment.as_deref(),
+            )
+            .await?;
         }
         None => {
             // `root ./path` shorthand — same as `root compile ./path`.
@@ -825,9 +848,9 @@ async fn run_query_llm(path: &PathBuf, query: &str, date: Option<&str>) -> anyho
     use thinkingroot_core::Config;
     use thinkingroot_extract::llm::LlmClient;
     use thinkingroot_serve::engine::QueryEngine;
-    use thinkingroot_serve::intelligence::router::{classify_query, QueryPath};
+    use thinkingroot_serve::intelligence::router::{QueryPath, classify_query};
     use thinkingroot_serve::intelligence::session::SessionContext;
-    use thinkingroot_serve::intelligence::synthesizer::{ask, AskRequest};
+    use thinkingroot_serve::intelligence::synthesizer::{AskRequest, ask};
 
     let path = std::fs::canonicalize(path)
         .with_context(|| format!("path not found: {}", path.display()))?;
@@ -881,14 +904,23 @@ async fn run_query_llm(path: &PathBuf, query: &str, date: Option<&str>) -> anyho
     let category = match classify_query(query, &tmp_session) {
         QueryPath::Agentic => {
             let q = query.to_lowercase();
-            if q.contains(" ago") || q.contains("last ") || q.contains("when ")
-                || q.contains("how many days") || q.contains("how many weeks")
-                || q.contains("how many months") || q.contains("what day")
-                || q.contains("what date") || q.contains("yesterday")
+            if q.contains(" ago")
+                || q.contains("last ")
+                || q.contains("when ")
+                || q.contains("how many days")
+                || q.contains("how many weeks")
+                || q.contains("how many months")
+                || q.contains("what day")
+                || q.contains("what date")
+                || q.contains("yesterday")
             {
                 "temporal-reasoning"
-            } else if q.contains("prefer") || q.contains("recommend") || q.contains("favourite")
-                || q.contains("favorite") || q.contains("gift") || q.contains("enjoy")
+            } else if q.contains("prefer")
+                || q.contains("recommend")
+                || q.contains("favourite")
+                || q.contains("favorite")
+                || q.contains("gift")
+                || q.contains("enjoy")
             {
                 "single-session-preference"
             } else {

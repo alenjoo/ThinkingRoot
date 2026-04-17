@@ -620,7 +620,8 @@ async fn collect_generic(
     };
 
     // ── Validate key ──────────────────────────────────────────────
-    if !no_validate && !api_key.is_empty()
+    if !no_validate
+        && !api_key.is_empty()
         && let Some(validate_url) = pdef.validate_url
     {
         let pb = spinner("Validating key...");

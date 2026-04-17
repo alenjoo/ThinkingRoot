@@ -231,7 +231,11 @@ pub async fn run_setup() -> anyhow::Result<()> {
     } else {
         println!("  Found {} tool(s):", detected.len());
         for tool in &detected {
-            println!("    {} {}", style("·").dim(), style(tool.name).white().bold());
+            println!(
+                "    {} {}",
+                style("·").dim(),
+                style(tool.name).white().bold()
+            );
         }
     }
     println!();
@@ -341,7 +345,10 @@ pub async fn run_setup() -> anyhow::Result<()> {
     println!();
     println!("  Next steps:");
     if !connect || detected.is_empty() {
-        println!("    {}  wire AI tools (Claude, Cursor, VS Code…)", style("root connect").cyan());
+        println!(
+            "    {}  wire AI tools (Claude, Cursor, VS Code…)",
+            style("root connect").cyan()
+        );
     }
     println!(
         "    {}  start the knowledge server (REST + MCP HTTP)",
@@ -822,7 +829,9 @@ fn set_provider_config(llm: &mut LlmConfig, provider: &ProviderDef, setup: &Prov
         }
         "azure" => {
             // Inject into env for this process session.
-            unsafe { std::env::set_var("AZURE_OPENAI_API_KEY", &setup.api_key); }
+            unsafe {
+                std::env::set_var("AZURE_OPENAI_API_KEY", &setup.api_key);
+            }
             persist_credential("AZURE_OPENAI_API_KEY", &setup.api_key);
             llm.providers.azure = Some(AzureConfig {
                 resource_name: setup.azure_resource.clone(),
@@ -847,7 +856,7 @@ fn set_provider_config(llm: &mut LlmConfig, provider: &ProviderDef, setup: &Prov
                     default_model: None,
                 };
                 match provider.id {
-                    "ollama"  => llm.providers.ollama  = Some(cfg),
+                    "ollama" => llm.providers.ollama = Some(cfg),
                     "litellm" => llm.providers.litellm = Some(cfg),
                     _ => {}
                 }
@@ -856,7 +865,9 @@ fn set_provider_config(llm: &mut LlmConfig, provider: &ProviderDef, setup: &Prov
             // Standard API-key providers.
             let env_var = provider.default_env;
             // Inject into env for this process session.
-            unsafe { std::env::set_var(env_var, &setup.api_key); }
+            unsafe {
+                std::env::set_var(env_var, &setup.api_key);
+            }
             // Persist to credentials.toml so future invocations work without
             // requiring `export KEY=...` in the shell profile.
             persist_credential(env_var, &setup.api_key);
@@ -872,14 +883,14 @@ fn set_provider_config(llm: &mut LlmConfig, provider: &ProviderDef, setup: &Prov
             };
             match provider.id {
                 "openrouter" => llm.providers.openrouter = Some(cfg),
-                "openai"     => llm.providers.openai     = Some(cfg),
-                "anthropic"  => llm.providers.anthropic  = Some(cfg),
-                "groq"       => llm.providers.groq        = Some(cfg),
-                "together"   => llm.providers.together   = Some(cfg),
-                "deepseek"   => llm.providers.deepseek   = Some(cfg),
+                "openai" => llm.providers.openai = Some(cfg),
+                "anthropic" => llm.providers.anthropic = Some(cfg),
+                "groq" => llm.providers.groq = Some(cfg),
+                "together" => llm.providers.together = Some(cfg),
+                "deepseek" => llm.providers.deepseek = Some(cfg),
                 "perplexity" => llm.providers.perplexity = Some(cfg),
-                "litellm"    => llm.providers.litellm    = Some(cfg),
-                "custom"     => llm.providers.custom     = Some(cfg),
+                "litellm" => llm.providers.litellm = Some(cfg),
+                "custom" => llm.providers.custom = Some(cfg),
                 _ => {}
             }
         }

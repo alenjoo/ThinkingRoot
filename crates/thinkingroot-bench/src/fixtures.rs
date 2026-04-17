@@ -95,8 +95,8 @@ impl Fixture {
             let name = format!("{adj}-{noun}-{i}");
             let etype = entity_types[i % entity_types.len()];
 
-            let entity =
-                Entity::new(&name, etype).with_description(format!("Benchmark entity {i} ({adj} {noun})"));
+            let entity = Entity::new(&name, etype)
+                .with_description(format!("Benchmark entity {i} ({adj} {noun})"));
             entity_ids.push(entity.id.to_string());
             entity_names.push(name);
             graph.insert_entity(&entity).unwrap();

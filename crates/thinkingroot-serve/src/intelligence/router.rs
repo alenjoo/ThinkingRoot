@@ -161,7 +161,10 @@ mod tests {
     #[test]
     fn multihop_query_routes_agentic() {
         assert_eq!(
-            classify_query("what is the relationship between Alice and Bob?", &session()),
+            classify_query(
+                "what is the relationship between Alice and Bob?",
+                &session()
+            ),
             QueryPath::Agentic
         );
         assert_eq!(

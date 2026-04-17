@@ -7,6 +7,8 @@ pub mod types;
 
 pub use config::Config;
 pub use error::{Error, Result};
-pub use global_config::{Credentials, GlobalConfig, ServeConfig, WorkspaceEntry, WorkspaceRegistry};
+pub use global_config::{
+    Credentials, GlobalConfig, ServeConfig, WorkspaceEntry, WorkspaceRegistry,
+};
 pub use id::Id;
 pub use types::*;

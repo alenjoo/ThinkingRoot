@@ -716,9 +716,9 @@ async fn ask_handler(
     Path(ws): Path<String>,
     Json(body): Json<AskRequest>,
 ) -> Response {
+    use crate::intelligence::synthesizer::{AskRequest as SynthAskRequest, ask};
     use std::collections::HashMap;
     use std::collections::HashSet;
-    use crate::intelligence::synthesizer::{ask, AskRequest as SynthAskRequest};
 
     let engine = state.engine.read().await;
 
@@ -744,7 +744,11 @@ async fn ask_handler(
         match crate::intelligence::router::classify_query(&body.question, &tmp_session) {
             crate::intelligence::router::QueryPath::Agentic => {
                 let q = body.question.to_lowercase();
-                if q.contains("when") || q.contains(" ago") || q.contains("last ") || q.contains("how many days") {
+                if q.contains("when")
+                    || q.contains(" ago")
+                    || q.contains("last ")
+                    || q.contains("how many days")
+                {
                     "temporal-reasoning".to_string()
                 } else if q.contains("how many") || q.contains("how much") || q.contains("count") {
                     "multi-session".to_string()

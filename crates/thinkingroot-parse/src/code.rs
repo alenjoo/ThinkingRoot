@@ -433,8 +433,7 @@ fn extract_field_types(source: &str, node: &tree_sitter::Node) -> Vec<String> {
                 if matches!(
                     field.kind(),
                     "field_declaration" | "typed_parameter" | "public_field_definition"
-                )
-                    && let Some(type_node) = field.child_by_field_name("type")
+                ) && let Some(type_node) = field.child_by_field_name("type")
                 {
                     let raw = source[type_node.byte_range()].trim().to_string();
                     let base = raw

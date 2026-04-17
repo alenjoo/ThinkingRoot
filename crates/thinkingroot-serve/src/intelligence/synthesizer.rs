@@ -209,15 +209,17 @@ pub async fn ask(
 // Internal synthesis
 // ---------------------------------------------------------------------------
 
-async fn synthesize(
-    claims: &[ClaimSearchHit],
-    llm: &LlmClient,
-    req: &AskRequest<'_>,
-) -> String {
+async fn synthesize(claims: &[ClaimSearchHit], llm: &LlmClient, req: &AskRequest<'_>) -> String {
     let claim_limit = claim_limit(req.category);
 
     // Build claim notes (knowledge-update gets a MOST RECENT / OLDER split)
-    let claim_notes = build_claim_notes(claims, claim_limit, req.category, req.session_dates, req.answer_sids);
+    let claim_notes = build_claim_notes(
+        claims,
+        claim_limit,
+        req.category,
+        req.session_dates,
+        req.answer_sids,
+    );
 
     // Build source section (session-count-adaptive)
     let (source_section, temporal_section) = build_source_section(req, &claim_notes);
@@ -343,10 +345,7 @@ fn build_claim_notes(
 // Source section builder (session-count-adaptive)
 // ---------------------------------------------------------------------------
 
-fn build_source_section(
-    req: &AskRequest<'_>,
-    claim_notes: &str,
-) -> (String, String) {
+fn build_source_section(req: &AskRequest<'_>, claim_notes: &str) -> (String, String) {
     let claimed_len = claim_notes.len();
 
     match req.category {

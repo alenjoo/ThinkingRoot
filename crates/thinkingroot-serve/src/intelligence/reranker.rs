@@ -111,7 +111,11 @@ impl Reranker {
         }
         // Normalise to [0, 1] range — max possible score is query_terms.len() * (K1+1)/1
         let max_score = self.query_terms.len() as f32 * (K1 + 1.0);
-        if max_score > 0.0 { score / max_score } else { 0.0 }
+        if max_score > 0.0 {
+            score / max_score
+        } else {
+            0.0
+        }
     }
 }
 
@@ -124,10 +128,9 @@ fn blend(vector_score: f32, bm25_score: f32) -> f32 {
 /// Tokenise text: lowercase, split on non-alphanumeric, drop stop-words and short tokens.
 fn tokenise(text: &str) -> Vec<String> {
     const STOP_WORDS: &[&str] = &[
-        "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
-        "have", "has", "had", "do", "does", "did", "will", "would", "could",
-        "should", "may", "might", "shall", "can", "to", "of", "in", "for",
-        "on", "at", "by", "from", "with", "as", "and", "or", "but", "not",
+        "a", "an", "the", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
+        "do", "does", "did", "will", "would", "could", "should", "may", "might", "shall", "can",
+        "to", "of", "in", "for", "on", "at", "by", "from", "with", "as", "and", "or", "but", "not",
         "this", "that", "it", "its", "i", "my", "me", "you", "your", "we",
     ];
 

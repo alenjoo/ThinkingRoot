@@ -76,7 +76,10 @@ fn generate_python_source(lines: usize) -> String {
 
     while line < lines {
         // Docstring-bearing function
-        out.push_str(&format!("def process_{}(data: List[str], limit: int = 100) -> Optional[Dict[str, int]]:\n", fn_idx));
+        out.push_str(&format!(
+            "def process_{}(data: List[str], limit: int = 100) -> Optional[Dict[str, int]]:\n",
+            fn_idx
+        ));
         line += 1;
         if line >= lines {
             break;
@@ -210,7 +213,10 @@ fn generate_markdown_source(lines: usize) -> String {
         // Bullet list
         let list_items = 4.min(lines.saturating_sub(line));
         for i in 0..list_items {
-            out.push_str(&format!("- Item {}.{}: configuration parameter\n", section, i));
+            out.push_str(&format!(
+                "- Item {}.{}: configuration parameter\n",
+                section, i
+            ));
             line += 1;
         }
         out.push('\n');
@@ -263,13 +269,9 @@ fn bench_parse_rust(c: &mut Criterion) {
     for &line_count in LINE_COUNTS {
         let src = generate_rust_source(line_count);
         let file = write_temp_file(&src, ".rs");
-        group.bench_with_input(
-            BenchmarkId::new("lines", line_count),
-            &file,
-            |b, f| {
-                b.iter(|| thinkingroot_parse::parse_file(f.path()));
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("lines", line_count), &file, |b, f| {
+            b.iter(|| thinkingroot_parse::parse_file(f.path()));
+        });
     }
     group.finish();
 }
@@ -279,13 +281,9 @@ fn bench_parse_python(c: &mut Criterion) {
     for &line_count in LINE_COUNTS {
         let src = generate_python_source(line_count);
         let file = write_temp_file(&src, ".py");
-        group.bench_with_input(
-            BenchmarkId::new("lines", line_count),
-            &file,
-            |b, f| {
-                b.iter(|| thinkingroot_parse::parse_file(f.path()));
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("lines", line_count), &file, |b, f| {
+            b.iter(|| thinkingroot_parse::parse_file(f.path()));
+        });
     }
     group.finish();
 }
@@ -295,13 +293,9 @@ fn bench_parse_typescript(c: &mut Criterion) {
     for &line_count in LINE_COUNTS {
         let src = generate_typescript_source(line_count);
         let file = write_temp_file(&src, ".ts");
-        group.bench_with_input(
-            BenchmarkId::new("lines", line_count),
-            &file,
-            |b, f| {
-                b.iter(|| thinkingroot_parse::parse_file(f.path()));
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("lines", line_count), &file, |b, f| {
+            b.iter(|| thinkingroot_parse::parse_file(f.path()));
+        });
     }
     group.finish();
 }
@@ -311,13 +305,9 @@ fn bench_parse_markdown(c: &mut Criterion) {
     for &line_count in LINE_COUNTS {
         let src = generate_markdown_source(line_count);
         let file = write_temp_file(&src, ".md");
-        group.bench_with_input(
-            BenchmarkId::new("lines", line_count),
-            &file,
-            |b, f| {
-                b.iter(|| thinkingroot_parse::parse_file(f.path()));
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("lines", line_count), &file, |b, f| {
+            b.iter(|| thinkingroot_parse::parse_file(f.path()));
+        });
     }
     group.finish();
 }

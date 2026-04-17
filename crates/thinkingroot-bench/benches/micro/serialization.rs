@@ -1,7 +1,5 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use thinkingroot_core::{
-    Claim, ClaimType, Entity, EntityType, Sensitivity, SourceId, WorkspaceId,
-};
+use thinkingroot_core::{Claim, ClaimType, Entity, EntityType, Sensitivity, SourceId, WorkspaceId};
 
 // ---------------------------------------------------------------------------
 // Helper constructors

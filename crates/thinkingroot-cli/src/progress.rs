@@ -675,7 +675,9 @@ fn active_bar_style() -> ProgressStyle {
 
 fn active_bar_elapsed_style() -> ProgressStyle {
     ProgressStyle::default_bar()
-        .template("  {spinner:.cyan} {prefix} [{bar:30.cyan/white.dim}] {pos}/{len}  {msg}  {elapsed}")
+        .template(
+            "  {spinner:.cyan} {prefix} [{bar:30.cyan/white.dim}] {pos}/{len}  {msg}  {elapsed}",
+        )
         .expect("static template is valid")
         .progress_chars("█░")
         .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
@@ -750,9 +752,10 @@ fn refresh_extract_bar(
         return;
     }
 
-    let mut estimated_done = estimated_extract_done(real_done, active_batches, completed_batch_secs)
-        .min(total_chunks)
-        .max(real_done);
+    let mut estimated_done =
+        estimated_extract_done(real_done, active_batches, completed_batch_secs)
+            .min(total_chunks)
+            .max(real_done);
     if real_done < total_chunks && estimated_done >= total_chunks {
         estimated_done = total_chunks.saturating_sub(1).max(real_done);
     }
@@ -775,7 +778,11 @@ fn refresh_extract_bar(
     let context = if let Some(batch) = active_batches.back() {
         format!(
             "batch {}/{}  files {}-{}  ({} files)",
-            batch.batch_index, batch.total_batches, batch.range_start, batch.range_end, batch.batch_chunks
+            batch.batch_index,
+            batch.total_batches,
+            batch.range_start,
+            batch.range_end,
+            batch.batch_chunks
         )
     } else {
         String::new()

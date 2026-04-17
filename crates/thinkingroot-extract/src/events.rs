@@ -19,26 +19,74 @@ use thinkingroot_core::types::{Claim, ExtractedEvent};
 // These are the verbs most likely to appear in personal/project memory context.
 // ---------------------------------------------------------------------------
 const MEMORY_VERBS: &[&str] = &[
-    "visited", "visit",
-    "ate", "eat", "had", "ordered", "tried",
-    "completed", "complete", "finished", "finish",
-    "decided", "decide", "chose", "choose", "picked",
-    "started", "start", "began", "begin",
-    "bought", "buy", "purchased",
-    "called", "call", "spoke", "speak", "talked",
-    "met", "meet",
-    "preferred", "prefer", "likes", "like", "loves", "love",
-    "cancelled", "cancel",
-    "signed", "sign",
-    "hired", "hire", "joined", "join",
-    "quit", "left", "leave",
-    "moved", "move",
-    "released", "release", "launched", "launch", "shipped",
-    "fixed", "fix", "resolved", "resolve",
-    "deployed", "deploy",
-    "updated", "update", "upgraded", "upgrade",
-    "scheduled", "schedule",
-    "attended", "attend",
+    "visited",
+    "visit",
+    "ate",
+    "eat",
+    "had",
+    "ordered",
+    "tried",
+    "completed",
+    "complete",
+    "finished",
+    "finish",
+    "decided",
+    "decide",
+    "chose",
+    "choose",
+    "picked",
+    "started",
+    "start",
+    "began",
+    "begin",
+    "bought",
+    "buy",
+    "purchased",
+    "called",
+    "call",
+    "spoke",
+    "speak",
+    "talked",
+    "met",
+    "meet",
+    "preferred",
+    "prefer",
+    "likes",
+    "like",
+    "loves",
+    "love",
+    "cancelled",
+    "cancel",
+    "signed",
+    "sign",
+    "hired",
+    "hire",
+    "joined",
+    "join",
+    "quit",
+    "left",
+    "leave",
+    "moved",
+    "move",
+    "released",
+    "release",
+    "launched",
+    "launch",
+    "shipped",
+    "fixed",
+    "fix",
+    "resolved",
+    "resolve",
+    "deployed",
+    "deploy",
+    "updated",
+    "update",
+    "upgraded",
+    "upgrade",
+    "scheduled",
+    "schedule",
+    "attended",
+    "attend",
 ];
 
 // ---------------------------------------------------------------------------
@@ -73,10 +121,7 @@ impl EventExtractor {
             // Prefer event_date (when the event actually happened) over valid_from
             // (ingestion timestamp). This is critical for historical claims like
             // "I graduated in 2018" — event_date=2018, valid_from=now.
-            let base_ts = claim
-                .event_date
-                .unwrap_or(claim.valid_from)
-                .timestamp() as f64;
+            let base_ts = claim.event_date.unwrap_or(claim.valid_from).timestamp() as f64;
 
             let verbs = Self::extract_verbs(stmt);
             if verbs.is_empty() {
@@ -103,8 +148,9 @@ impl EventExtractor {
             };
 
             // Try to match an object entity (greedy: first entity that is NOT the subject).
-            let object_entity_id = Self::match_object_entity(stmt, entity_name_to_id, &subject_entity_id)
-                .unwrap_or_default();
+            let object_entity_id =
+                Self::match_object_entity(stmt, entity_name_to_id, &subject_entity_id)
+                    .unwrap_or_default();
 
             for verb in &verbs {
                 let ev_id = format!(
@@ -175,7 +221,10 @@ impl EventExtractor {
         }
         if lower.contains("last month") {
             let d = first_of_prev_month(today);
-            return (naive_to_ts(d, base_ts), format!("{}-{:02}", d.year(), d.month()));
+            return (
+                naive_to_ts(d, base_ts),
+                format!("{}-{:02}", d.year(), d.month()),
+            );
         }
         if lower.contains("last year") {
             let d = NaiveDate::from_ymd_opt(today.year() - 1, 1, 1).unwrap_or(today);
@@ -305,17 +354,19 @@ impl EventExtractor {
         let mut events: Vec<ExtractedEvent> = Vec::new();
 
         for claim in claims {
-            let base_ts = claim
-                .event_date
-                .unwrap_or(claim.valid_from)
-                .timestamp() as f64;
+            let base_ts = claim.event_date.unwrap_or(claim.valid_from).timestamp() as f64;
             let stmt = &claim.statement;
 
             // Ask LLM to extract SVOs from this claim.
             let llm_events = match llm.chat(SVO_SYSTEM_PROMPT, stmt).await {
                 Ok(text) => {
                     // Strip markdown code fences if present.
-                    let clean = text.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+                    let clean = text
+                        .trim()
+                        .trim_start_matches("```json")
+                        .trim_start_matches("```")
+                        .trim_end_matches("```")
+                        .trim();
                     serde_json::from_str::<Vec<LlmSvoEvent>>(clean).unwrap_or_default()
                 }
                 Err(_) => vec![],
@@ -361,7 +412,8 @@ impl EventExtractor {
                 }
             } else {
                 // LLM returned nothing — fall back to heuristic extraction for this claim.
-                let heuristic = self.extract_from_claims(std::slice::from_ref(claim), entity_name_to_id);
+                let heuristic =
+                    self.extract_from_claims(std::slice::from_ref(claim), entity_name_to_id);
                 events.extend(heuristic);
             }
         }

@@ -247,10 +247,19 @@ mod tests {
             },
         ];
         let prompt = build_batch_prompt(&chunks, "");
-        assert!(prompt.contains("<chunk id=\"0\""), "must contain chunk 0 tag");
-        assert!(prompt.contains("<chunk id=\"1\""), "must contain chunk 1 tag");
+        assert!(
+            prompt.contains("<chunk id=\"0\""),
+            "must contain chunk 0 tag"
+        );
+        assert!(
+            prompt.contains("<chunk id=\"1\""),
+            "must contain chunk 1 tag"
+        );
         assert!(prompt.contains("fn main()"), "must contain chunk 0 content");
-        assert!(prompt.contains("struct Foo"), "must contain chunk 1 content");
+        assert!(
+            prompt.contains("struct Foo"),
+            "must contain chunk 1 content"
+        );
     }
 
     #[test]
@@ -263,7 +272,10 @@ mod tests {
         }];
         let known = "## KNOWN_ENTITIES\n- AuthService (service)";
         let prompt = build_batch_prompt(&chunks, known);
-        assert!(prompt.contains("KNOWN_ENTITIES"), "must embed known entities section");
+        assert!(
+            prompt.contains("KNOWN_ENTITIES"),
+            "must embed known entities section"
+        );
     }
 
     #[test]
@@ -275,8 +287,14 @@ mod tests {
             ast_anchor: "Function: validate\nCalls: [decode]".into(),
         }];
         let prompt = build_batch_prompt(&chunks, "");
-        assert!(prompt.contains("validate"), "must include ast anchor content");
-        assert!(prompt.contains("decode"), "must include called function name");
+        assert!(
+            prompt.contains("validate"),
+            "must include ast anchor content"
+        );
+        assert!(
+            prompt.contains("decode"),
+            "must include called function name"
+        );
     }
 
     #[test]
@@ -307,17 +325,25 @@ mod tests {
 
     #[test]
     fn parse_batch_response_missing_chunk_returns_empty() {
-        let response = r#"{"results": [{"chunk_id": 0, "claims": [], "entities": [], "relations": []}]}"#;
+        let response =
+            r#"{"results": [{"chunk_id": 0, "claims": [], "entities": [], "relations": []}]}"#;
         let results = parse_batch_response(response, &[0, 1]);
         assert_eq!(results.len(), 2, "must return entry for every expected id");
         let r1 = results.iter().find(|r| r.id == 1).unwrap();
-        assert!(r1.result.claims.is_empty(), "missing chunk must return empty result");
+        assert!(
+            r1.result.claims.is_empty(),
+            "missing chunk must return empty result"
+        );
     }
 
     #[test]
     fn parse_batch_response_falls_back_on_malformed_json() {
         let results = parse_batch_response("this is not json", &[0, 1]);
-        assert_eq!(results.len(), 2, "must return empty results for all ids on failure");
+        assert_eq!(
+            results.len(),
+            2,
+            "must return empty results for all ids on failure"
+        );
         assert!(results[0].result.claims.is_empty());
         assert!(results[1].result.claims.is_empty());
     }
@@ -353,8 +379,17 @@ mod tests {
             ast_anchor: String::new(),
         }];
         let prompt = build_batch_prompt(&chunks, "");
-        assert!(prompt.contains("\"results\""), "prompt must instruct LLM to use results key");
-        assert!(prompt.contains("chunk_id"), "prompt must mention chunk_id field");
-        assert!(prompt.contains("ONE JSON"), "prompt must emphasize single output object");
+        assert!(
+            prompt.contains("\"results\""),
+            "prompt must instruct LLM to use results key"
+        );
+        assert!(
+            prompt.contains("chunk_id"),
+            "prompt must mention chunk_id field"
+        );
+        assert!(
+            prompt.contains("ONE JSON"),
+            "prompt must emphasize single output object"
+        );
     }
 }

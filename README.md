@@ -131,30 +131,30 @@ root watch .
 
 ---
 
-## Knowledge Galaxy
+## Knowledge Graph
 
-ThinkingRoot includes an interactive **3D Knowledge Galaxy** — a real-time, navigable graph of every entity, claim, and relation in your compiled workspace. Launch it in one command:
+ThinkingRoot includes an interactive **3D Knowledge Graph** — a real-time, navigable graph of every entity, claim, and relation in your compiled workspace. Launch it in one command:
 
 ```bash
 root graph .
 # → Opens http://localhost:3001 in your browser
 ```
 
-The galaxy renders thousands of nodes as 3D sphere impostor particles, coloured by entity type, sized by claim density, and connected by typed relations. You can fly through it, search semantically, and inspect any entity's full claim set.
+The graph renders thousands of nodes as 3D sphere impostor particles, coloured by entity type, sized by claim density, and connected by typed relations. You can fly through it, search semantically, and inspect any entity's full claim set.
 
 **Viewing a real workspace compiled from 500+ conversation sessions:**
 
 <div align="center">
 
-![Knowledge Galaxy — full view showing thousands of entities as a luminous nebula](assets/galaxy_overview.png)
+![Knowledge Graph — full view showing thousands of entities as a luminous nebula](assets/galaxy_overview.png)
 
-*Full galaxy view — each sphere is an entity, sized by the number of claims attached to it*
+*Full graph view — each sphere is an entity, sized by the number of claims attached to it*
 
 </div>
 
 <div align="center">
 
-![Knowledge Galaxy — medium zoom with relation edges visible between entity clusters](assets/galaxy_network.png)
+![Knowledge Graph — medium zoom with relation edges visible between entity clusters](assets/galaxy_network.png)
 
 *Mid-zoom — relation edges materialise as you approach a cluster*
 
@@ -162,7 +162,7 @@ The galaxy renders thousands of nodes as 3D sphere impostor particles, coloured 
 
 <div align="center">
 
-![Knowledge Galaxy — close-up showing labelled entity nodes with class and claim count HUD](assets/galaxy_nodes.png)
+![Knowledge Graph — close-up showing labelled entity nodes with class and claim count HUD](assets/galaxy_nodes.png)
 
 *Entity HUD — click any node to see its class, claim count, and an Extract Intel action*
 
@@ -170,7 +170,7 @@ The galaxy renders thousands of nodes as 3D sphere impostor particles, coloured 
 
 <div align="center">
 
-![Knowledge Galaxy — ultra close-up showing 3D sphere impostor shading on individual nodes](assets/galaxy_closeup.png)
+![Knowledge Graph — ultra close-up showing 3D sphere impostor shading on individual nodes](assets/galaxy_closeup.png)
 
 *Individual nodes with 3D sphere impostor shading — each one is a distinct compiled entity*
 
@@ -965,21 +965,6 @@ Global:
 
 ---
 
-## Roadmap
-
-| Phase | Status | What |
-|---|---|---|
-| **Phase 1** — Core engine | ✅ Complete | 6-stage pipeline, CozoDB graph, fastembed vectors, CLI |
-| **Phase 2** — Serve + SDK | ✅ Complete | REST API, MCP server (SSE + stdio), Python SDK |
-| **Phase 3** — Onboarding | ✅ Complete | 11 LLM providers, global config, `root setup`, `root connect`, workspace registry, OS service |
-| **Phase 3.5** — KVC | ✅ Complete | Knowledge Version Control: branch / checkout / diff / merge / status / snapshot, semantic diff, health CI gate, merge lock + rollback, REST + MCP branch APIs |
-| **Phase 3.6** — Intelligence | ✅ Complete | NLI Tribunal, Hybrid Retrieval Pipeline, `root ask`, 91.2% LongMemEval |
-| **Phase 4** — Cloud | 🔒 Planned | Dashboard, source connectors, multi-tenant (separate repo) |
-| **Phase 5** — Enterprise | 🔒 Planned | SSO, compliance, air-gapped deploy (separate repo) |
-
-Phases 1–3.6 are fully open source in this repo. Phases 4–5 are in a separate private repo. Star to follow progress.
-
----
 
 ## Building from Source
 

@@ -781,9 +781,7 @@ pub fn run_connect(
     if !dry_run && !remove {
         println!();
         if stdio_connected {
-            println!(
-                "  Stdio tools connected — no server needed, spawned per session."
-            );
+            println!("  Stdio tools connected — no server needed, spawned per session.");
         }
         if http_connected {
             println!(
@@ -827,9 +825,15 @@ mod tests {
         assert_eq!(args[1], "--mcp-stdio");
         assert_eq!(args[2], "--path");
         // No "type" field — inferred from presence of "command"
-        assert!(entry["type"].is_null(), "McpServers must not have a type field");
+        assert!(
+            entry["type"].is_null(),
+            "McpServers must not have a type field"
+        );
         // No "url" field
-        assert!(entry["url"].is_null(), "McpServers must not have a url field");
+        assert!(
+            entry["url"].is_null(),
+            "McpServers must not have a url field"
+        );
     }
 
     #[test]
@@ -840,7 +844,10 @@ mod tests {
             }
         });
         apply_entry(&mut existing, ConfigFormat::McpServers, 3000);
-        assert!(existing["mcpServers"]["github"].is_object(), "existing server preserved");
+        assert!(
+            existing["mcpServers"]["github"].is_object(),
+            "existing server preserved"
+        );
         assert!(existing["mcpServers"]["thinkingroot"]["command"].is_string());
     }
 
@@ -851,7 +858,10 @@ mod tests {
         let mut existing = json!({});
         apply_entry(&mut existing, ConfigFormat::Servers, 3001);
         let entry = &existing["servers"]["thinkingroot"];
-        assert_eq!(entry["type"], "stdio", "VS Code requires explicit type:stdio");
+        assert_eq!(
+            entry["type"], "stdio",
+            "VS Code requires explicit type:stdio"
+        );
         assert!(entry["command"].is_string());
         assert!(entry["url"].is_null(), "must not have url field");
     }
@@ -864,7 +874,10 @@ mod tests {
         apply_entry(&mut existing, ConfigFormat::ContextServers, 3000);
         let entry = &existing["context_servers"]["thinkingroot"];
         assert!(entry["command"].is_string());
-        assert!(entry["type"].is_null(), "Zed infers transport from command key — no type field");
+        assert!(
+            entry["type"].is_null(),
+            "Zed infers transport from command key — no type field"
+        );
         assert!(entry["url"].is_null());
     }
 
@@ -889,8 +902,14 @@ mod tests {
             existing["mcpServers"]["thinkingroot"]["httpUrl"],
             "http://localhost:3000/mcp/sse"
         );
-        assert!(existing["mcpServers"]["thinkingroot"]["url"].is_null(), "must use httpUrl not url");
-        assert!(existing["mcpServers"]["thinkingroot"]["command"].is_null(), "no command for Gemini CLI");
+        assert!(
+            existing["mcpServers"]["thinkingroot"]["url"].is_null(),
+            "must use httpUrl not url"
+        );
+        assert!(
+            existing["mcpServers"]["thinkingroot"]["command"].is_null(),
+            "no command for Gemini CLI"
+        );
         assert_eq!(existing["theme"], "Default", "other settings preserved");
     }
 
@@ -941,7 +960,10 @@ mod tests {
         });
         apply_claude_code_entry(&mut existing, 3000, "/my/workspace");
         let entry = &existing["projects"]["/my/workspace"]["mcpServers"]["thinkingroot"];
-        assert!(entry["command"].is_string(), "Claude Code must use stdio command");
+        assert!(
+            entry["command"].is_string(),
+            "Claude Code must use stdio command"
+        );
         let args: Vec<&str> = entry["args"]
             .as_array()
             .unwrap()
@@ -951,8 +973,14 @@ mod tests {
         assert_eq!(args[0], "serve");
         assert_eq!(args[1], "--mcp-stdio");
         // No SSE url
-        assert!(entry["url"].is_null(), "Claude Code must not have url field");
-        assert!(entry["type"].is_null(), "Claude Code infers stdio from command key");
+        assert!(
+            entry["url"].is_null(),
+            "Claude Code must not have url field"
+        );
+        assert!(
+            entry["type"].is_null(),
+            "Claude Code infers stdio from command key"
+        );
         // Other project preserved
         assert!(existing["projects"]["/other/project"]["mcpServers"]["github"].is_object());
         assert_eq!(existing["numStartups"], 10);
@@ -990,7 +1018,10 @@ args = ["@playwright/mcp@latest"]
         apply_codex_entry(&mut doc, "/usr/local/bin/root", "/workspace");
         let root = doc.as_table().unwrap();
         let mcp = root["mcp_servers"].as_table().unwrap();
-        assert_eq!(mcp["thinkingroot"]["command"].as_str().unwrap(), "/usr/local/bin/root");
+        assert_eq!(
+            mcp["thinkingroot"]["command"].as_str().unwrap(),
+            "/usr/local/bin/root"
+        );
         let args: Vec<&str> = mcp["thinkingroot"]["args"]
             .as_array()
             .unwrap()
@@ -999,7 +1030,11 @@ args = ["@playwright/mcp@latest"]
             .collect();
         assert_eq!(args, ["serve", "--mcp-stdio", "--path", "/workspace"]);
         assert!(mcp["playwright"].is_table(), "existing server preserved");
-        assert_eq!(root["model"].as_str().unwrap(), "gpt-4o", "top-level key preserved");
+        assert_eq!(
+            root["model"].as_str().unwrap(),
+            "gpt-4o",
+            "top-level key preserved"
+        );
     }
 
     #[test]
@@ -1025,13 +1060,18 @@ args = ["serve", "--mcp-stdio", "--path", "/workspace"]
         let test_key = "AWS_ACCESS_KEY_ID";
         let test_value = "AKIAIOSFODNN7EXAMPLE";
         let original_val = std::env::var(test_key).ok();
-        unsafe { std::env::set_var(test_key, test_value); }
+        unsafe {
+            std::env::set_var(test_key, test_value);
+        }
 
         let mut doc: toml::Value = toml::Value::Table(toml::map::Map::new());
         apply_codex_entry(&mut doc, "/usr/local/bin/root", "/workspace");
         let mcp = doc["mcp_servers"]["thinkingroot"].as_table().unwrap();
         assert_eq!(mcp["command"].as_str().unwrap(), "/usr/local/bin/root");
-        assert!(mcp.contains_key("env"), "env table should exist when credentials are set");
+        assert!(
+            mcp.contains_key("env"),
+            "env table should exist when credentials are set"
+        );
         assert_eq!(mcp["env"][test_key].as_str().unwrap(), test_value);
 
         unsafe {
@@ -1050,12 +1090,19 @@ args = ["serve", "--mcp-stdio", "--path", "/workspace"]
             .iter()
             .map(|v| (v.to_string(), std::env::var(v).ok()))
             .collect();
-        unsafe { for v in CREDENTIAL_VARS { std::env::remove_var(v); } }
+        unsafe {
+            for v in CREDENTIAL_VARS {
+                std::env::remove_var(v);
+            }
+        }
 
         let mut doc: toml::Value = toml::Value::Table(toml::map::Map::new());
         apply_codex_entry(&mut doc, "/usr/local/bin/root", "/workspace");
         let mcp = doc["mcp_servers"]["thinkingroot"].as_table().unwrap();
-        assert!(!mcp.contains_key("env"), "env table should be absent when no credentials are set");
+        assert!(
+            !mcp.contains_key("env"),
+            "env table should be absent when no credentials are set"
+        );
 
         unsafe {
             for (var_name, original_val) in original_vals {

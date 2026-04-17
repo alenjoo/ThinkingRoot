@@ -233,36 +233,25 @@ pub struct NliJudge {
 impl NliJudge {
     /// Create an NLI judge from the embedded model with configurable parallelism.
     fn load(intra_threads: usize) -> thinkingroot_core::Result<Self> {
-        let tokenizer =
-            tokenizers::Tokenizer::from_bytes(TOKENIZER_JSON).map_err(|e| {
-                thinkingroot_core::Error::VectorStorage(format!(
-                    "NLI tokenizer load failed: {e}"
-                ))
-            })?;
+        let tokenizer = tokenizers::Tokenizer::from_bytes(TOKENIZER_JSON).map_err(|e| {
+            thinkingroot_core::Error::VectorStorage(format!("NLI tokenizer load failed: {e}"))
+        })?;
 
         let session = Session::builder()
             .map_err(|e| {
-                thinkingroot_core::Error::VectorStorage(format!(
-                    "ort session builder failed: {e}"
-                ))
+                thinkingroot_core::Error::VectorStorage(format!("ort session builder failed: {e}"))
             })?
             .with_optimization_level(GraphOptimizationLevel::All)
             .map_err(|e| {
-                thinkingroot_core::Error::VectorStorage(format!(
-                    "optimization level failed: {e}"
-                ))
+                thinkingroot_core::Error::VectorStorage(format!("optimization level failed: {e}"))
             })?
             .with_intra_threads(intra_threads)
             .map_err(|e| {
-                thinkingroot_core::Error::VectorStorage(format!(
-                    "intra_threads config failed: {e}"
-                ))
+                thinkingroot_core::Error::VectorStorage(format!("intra_threads config failed: {e}"))
             })?
             .commit_from_memory(ONNX_MODEL)
             .map_err(|e| {
-                thinkingroot_core::Error::VectorStorage(format!(
-                    "NLI model load failed: {e}"
-                ))
+                thinkingroot_core::Error::VectorStorage(format!("NLI model load failed: {e}"))
             })?;
 
         Ok(Self { session, tokenizer })
@@ -290,8 +279,7 @@ impl NliJudge {
             };
             match self.tokenizer.encode((source, claim), true) {
                 Ok(enc) => {
-                    let ids: Vec<i64> =
-                        enc.get_ids().iter().map(|&id| id as i64).collect();
+                    let ids: Vec<i64> = enc.get_ids().iter().map(|&id| id as i64).collect();
                     let mask: Vec<i64> =
                         enc.get_attention_mask().iter().map(|&m| m as i64).collect();
                     encodings.push((ids, mask));
@@ -303,7 +291,11 @@ impl NliJudge {
             }
         }
 
-        let max_len = encodings.iter().map(|(ids, _)| ids.len()).max().unwrap_or(1);
+        let max_len = encodings
+            .iter()
+            .map(|(ids, _)| ids.len())
+            .max()
+            .unwrap_or(1);
         let mut flat_ids = vec![0i64; batch_size * max_len];
         let mut flat_mask = vec![0i64; batch_size * max_len];
 
@@ -349,8 +341,7 @@ impl NliJudge {
                 .map(|i| {
                     let offset = i * 3;
                     if offset + 2 < data.len() {
-                        let probs =
-                            softmax(&[data[offset], data[offset + 1], data[offset + 2]]);
+                        let probs = softmax(&[data[offset], data[offset + 1], data[offset + 2]]);
                         NliResult {
                             contradiction: probs[0] as f64,
                             entailment: probs[1] as f64,

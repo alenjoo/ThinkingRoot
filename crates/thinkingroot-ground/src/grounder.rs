@@ -103,20 +103,14 @@ impl Grounder {
         // We store indices (not claims) to avoid moving data.
         let mut source_to_indices: HashMap<SourceId, Vec<usize>> = HashMap::new();
         for (i, claim) in extraction.claims.iter().enumerate() {
-            source_to_indices
-                .entry(claim.source)
-                .or_default()
-                .push(i);
+            source_to_indices.entry(claim.source).or_default().push(i);
         }
 
         let num_sources = source_to_indices.len();
-        tracing::info!(
-            "grounding {total_claims} claims across {num_sources} sources"
-        );
+        tracing::info!("grounding {total_claims} claims across {num_sources} sources");
 
         // ── Process per source, releasing text after each ────────────────
-        let mut verdicts: HashMap<ClaimId, GroundingVerdict> =
-            HashMap::with_capacity(total_claims);
+        let mut verdicts: HashMap<ClaimId, GroundingVerdict> = HashMap::with_capacity(total_claims);
         let mut done: usize = 0;
         #[cfg(feature = "vector")]
         let nli_batch_size = 48usize;
@@ -196,10 +190,8 @@ impl Grounder {
                 #[cfg(feature = "vector")]
                 let semantic_scores: Vec<Option<f64>> = match vector_store.as_mut() {
                     Some(vs) if !ml_indices.is_empty() => {
-                        let ml_pairs: Vec<(&str, &str)> = ml_indices
-                            .iter()
-                            .map(|&j| pairs[j])
-                            .collect();
+                        let ml_pairs: Vec<(&str, &str)> =
+                            ml_indices.iter().map(|&j| pairs[j]).collect();
                         let raw = crate::semantic::SemanticJudge::score_batch(&ml_pairs, *vs);
                         let mut result = vec![None; chunk.len()];
                         for (k, &j) in ml_indices.iter().enumerate() {
@@ -326,27 +318,25 @@ fn combine_scores(
     nli: Option<f64>,
 ) -> (f64, GroundingMethod) {
     match (span, semantic, nli) {
-        (Some(s), Some(sem), Some(n)) => {
-            (lexical * 0.15 + s * 0.20 + sem * 0.25 + n * 0.40, GroundingMethod::Combined)
-        }
-        (Some(s), None, Some(n)) => {
-            (lexical * 0.15 + s * 0.25 + n * 0.60, GroundingMethod::Combined)
-        }
-        (None, Some(sem), Some(n)) => {
-            (lexical * 0.15 + sem * 0.30 + n * 0.55, GroundingMethod::Combined)
-        }
-        (None, None, Some(n)) => {
-            (lexical * 0.25 + n * 0.75, GroundingMethod::Combined)
-        }
-        (Some(s), Some(sem), None) => {
-            (lexical * 0.35 + s * 0.35 + sem * 0.30, GroundingMethod::Combined)
-        }
-        (Some(s), None, None) => {
-            (lexical * 0.5 + s * 0.5, GroundingMethod::Combined)
-        }
-        (None, Some(sem), None) => {
-            (lexical * 0.55 + sem * 0.45, GroundingMethod::Combined)
-        }
+        (Some(s), Some(sem), Some(n)) => (
+            lexical * 0.15 + s * 0.20 + sem * 0.25 + n * 0.40,
+            GroundingMethod::Combined,
+        ),
+        (Some(s), None, Some(n)) => (
+            lexical * 0.15 + s * 0.25 + n * 0.60,
+            GroundingMethod::Combined,
+        ),
+        (None, Some(sem), Some(n)) => (
+            lexical * 0.15 + sem * 0.30 + n * 0.55,
+            GroundingMethod::Combined,
+        ),
+        (None, None, Some(n)) => (lexical * 0.25 + n * 0.75, GroundingMethod::Combined),
+        (Some(s), Some(sem), None) => (
+            lexical * 0.35 + s * 0.35 + sem * 0.30,
+            GroundingMethod::Combined,
+        ),
+        (Some(s), None, None) => (lexical * 0.5 + s * 0.5, GroundingMethod::Combined),
+        (None, Some(sem), None) => (lexical * 0.55 + sem * 0.45, GroundingMethod::Combined),
         (None, None, None) => (lexical, GroundingMethod::Lexical),
     }
 }
@@ -355,7 +345,8 @@ fn truncate(s: &str, max: usize) -> &str {
     if s.len() <= max {
         s
     } else {
-        let boundary = s.char_indices()
+        let boundary = s
+            .char_indices()
             .map(|(i, _)| i)
             .take_while(|&i| i <= max)
             .last()
@@ -438,13 +429,18 @@ mod tests {
         let src = SourceId::new();
         let extraction = make_extraction(
             vec![("PostgreSQL stores user data in tables", src)],
-            vec![(src, "PostgreSQL stores user data in tables and handles transactions")],
+            vec![(
+                src,
+                "PostgreSQL stores user data in tables and handles transactions",
+            )],
             vec![],
         );
         let result = Grounder::new(GroundingConfig::default()).ground(
             extraction,
-            #[cfg(feature = "vector")] None,
-            #[cfg(feature = "vector")] None,
+            #[cfg(feature = "vector")]
+            None,
+            #[cfg(feature = "vector")]
+            None,
         );
         assert_eq!(result.claims.len(), 1);
         assert!(result.claims[0].grounding_score.unwrap() > 0.5);
@@ -455,13 +451,18 @@ mod tests {
         let src = SourceId::new();
         let extraction = make_extraction(
             vec![("Redis caches session tokens in memory", src)],
-            vec![(src, "PostgreSQL stores user data in tables and handles transactions")],
+            vec![(
+                src,
+                "PostgreSQL stores user data in tables and handles transactions",
+            )],
             vec![],
         );
         let result = Grounder::new(GroundingConfig::default()).ground(
             extraction,
-            #[cfg(feature = "vector")] None,
-            #[cfg(feature = "vector")] None,
+            #[cfg(feature = "vector")]
+            None,
+            #[cfg(feature = "vector")]
+            None,
         );
         assert_eq!(result.claims.len(), 0);
     }
@@ -481,8 +482,10 @@ mod tests {
 
         let result = Grounder::new(GroundingConfig::default()).ground(
             extraction,
-            #[cfg(feature = "vector")] None,
-            #[cfg(feature = "vector")] None,
+            #[cfg(feature = "vector")]
+            None,
+            #[cfg(feature = "vector")]
+            None,
         );
         assert_eq!(result.claims.len(), 1);
         assert!(result.claims[0].grounding_score.unwrap() > 0.8);
@@ -493,7 +496,10 @@ mod tests {
         let src = SourceId::new();
         let extraction = make_extraction(
             vec![("PostgreSQL handles authentication and sessions", src)],
-            vec![(src, "PostgreSQL stores user data and handles transactions for the application")],
+            vec![(
+                src,
+                "PostgreSQL stores user data and handles transactions for the application",
+            )],
             vec![],
         );
         let result = Grounder::new(GroundingConfig {
@@ -502,8 +508,10 @@ mod tests {
         })
         .ground(
             extraction,
-            #[cfg(feature = "vector")] None,
-            #[cfg(feature = "vector")] None,
+            #[cfg(feature = "vector")]
+            None,
+            #[cfg(feature = "vector")]
+            None,
         );
         assert_eq!(result.claims.len(), 1);
         assert!(result.claims[0].confidence.value() < 0.8);
@@ -519,8 +527,10 @@ mod tests {
         );
         let result = Grounder::new(GroundingConfig::default()).ground(
             extraction,
-            #[cfg(feature = "vector")] None,
-            #[cfg(feature = "vector")] None,
+            #[cfg(feature = "vector")]
+            None,
+            #[cfg(feature = "vector")]
+            None,
         );
         // source_texts should be drained (removed) by the grounder
         assert!(result.source_texts.is_empty());

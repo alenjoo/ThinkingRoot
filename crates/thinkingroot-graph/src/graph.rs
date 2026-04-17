@@ -182,9 +182,7 @@ impl GraphStore {
                 Err(e) => {
                     let msg = e.to_string();
                     if !msg.contains("already exists") && !msg.contains("already in use") {
-                        return Err(Error::GraphStorage(format!(
-                            "index creation failed: {msg}"
-                        )));
+                        return Err(Error::GraphStorage(format!("index creation failed: {msg}")));
                     }
                 }
             }
@@ -414,7 +412,10 @@ impl GraphStore {
         params.insert(
             "event_date".into(),
             DataValue::Num(Num::Float(
-                claim.event_date.map(|d| d.timestamp() as f64).unwrap_or(0.0),
+                claim
+                    .event_date
+                    .map(|d| d.timestamp() as f64)
+                    .unwrap_or(0.0),
             )),
         );
 
@@ -668,9 +669,7 @@ impl GraphStore {
     /// Bulk-load all entity aliases in one query — used by the in-memory cache loader.
     /// Returns `(entity_id, alias)` pairs for every row in `entity_aliases`.
     pub fn get_all_entity_aliases(&self) -> Result<Vec<(String, String)>> {
-        let result = self.query_read(
-            "?[entity_id, alias] := *entity_aliases{entity_id, alias}",
-        )?;
+        let result = self.query_read("?[entity_id, alias] := *entity_aliases{entity_id, alias}")?;
         Ok(result
             .rows
             .iter()
@@ -681,9 +680,8 @@ impl GraphStore {
     /// Bulk-load all claim→entity edges in one query — used by the in-memory cache loader.
     /// Returns `(claim_id, entity_id)` pairs for every row in `claim_entity_edges`.
     pub fn get_all_claim_entity_edges(&self) -> Result<Vec<(String, String)>> {
-        let result = self.query_read(
-            "?[claim_id, entity_id] := *claim_entity_edges{claim_id, entity_id}",
-        )?;
+        let result =
+            self.query_read("?[claim_id, entity_id] := *claim_entity_edges{claim_id, entity_id}")?;
         Ok(result
             .rows
             .iter()
@@ -1841,10 +1839,7 @@ impl GraphStore {
 
     /// Point lookup: return (canonical_name, entity_type, description) for one entity.
     /// Used by branch union search to resolve hits that exist only in the branch graph.
-    pub fn get_entity_by_id(
-        &self,
-        entity_id: &str,
-    ) -> Result<Option<(String, String, String)>> {
+    pub fn get_entity_by_id(&self, entity_id: &str) -> Result<Option<(String, String, String)>> {
         let mut params = BTreeMap::new();
         params.insert("eid".into(), DataValue::Str(entity_id.into()));
 
@@ -2663,10 +2658,7 @@ impl GraphStore {
                 "nd".into(),
                 DataValue::Str(ev.normalized_date.clone().into()),
             );
-            params.insert(
-                "src".into(),
-                DataValue::Str(ev.source_id.clone().into()),
-            );
+            params.insert("src".into(), DataValue::Str(ev.source_id.clone().into()));
             params.insert("conf".into(), DataValue::from(ev.confidence));
 
             self.query(
@@ -2680,24 +2672,22 @@ impl GraphStore {
     }
 
     /// Query events whose timestamp falls within [start_ts, end_ts].
-    pub fn query_events_in_range(
-        &self,
-        start_ts: f64,
-        end_ts: f64,
-    ) -> Result<Vec<EventRow>> {
+    pub fn query_events_in_range(&self, start_ts: f64, end_ts: f64) -> Result<Vec<EventRow>> {
         let mut params = BTreeMap::new();
         params.insert("start".into(), DataValue::from(start_ts));
         params.insert("end".into(), DataValue::from(end_ts));
 
-        let result = self.db.run_script(
-            "?[id, subj, verb, obj, nd] :=
+        let result = self
+            .db
+            .run_script(
+                "?[id, subj, verb, obj, nd] :=
                 *events{id, subject_entity_id: subj, verb, object_entity_id: obj,
                         timestamp: ts, normalized_date: nd},
                 ts >= $start, ts <= $end",
-            params,
-            ScriptMutability::Immutable,
-        )
-        .map_err(|e| Error::GraphStorage(format!("query_events_in_range failed: {e}")))?;
+                params,
+                ScriptMutability::Immutable,
+            )
+            .map_err(|e| Error::GraphStorage(format!("query_events_in_range failed: {e}")))?;
 
         Ok(result
             .rows
@@ -2719,15 +2709,17 @@ impl GraphStore {
         let mut params = BTreeMap::new();
         params.insert("eid".into(), DataValue::Str(entity_id.into()));
 
-        let result = self.db.run_script(
-            "?[id, subj, verb, obj, nd] :=
+        let result = self
+            .db
+            .run_script(
+                "?[id, subj, verb, obj, nd] :=
                 *events{id, subject_entity_id: $eid, verb, object_entity_id: obj,
                         normalized_date: nd},
                 subj = $eid",
-            params,
-            ScriptMutability::Immutable,
-        )
-        .map_err(|e| Error::GraphStorage(format!("query_events_for_entity failed: {e}")))?;
+                params,
+                ScriptMutability::Immutable,
+            )
+            .map_err(|e| Error::GraphStorage(format!("query_events_for_entity failed: {e}")))?;
 
         Ok(result
             .rows
@@ -2787,8 +2779,7 @@ impl GraphStore {
         claim_ids: &[String],
     ) -> Result<()> {
         let ts = chrono::Utc::now().timestamp() as f64;
-        let claim_ids_json = serde_json::to_string(claim_ids)
-            .unwrap_or_else(|_| "[]".to_string());
+        let claim_ids_json = serde_json::to_string(claim_ids).unwrap_or_else(|_| "[]".to_string());
 
         let mut params = BTreeMap::new();
         params.insert("sid".into(), DataValue::Str(session_id.into()));
@@ -2796,34 +2787,34 @@ impl GraphStore {
         params.insert("cids".into(), DataValue::Str(claim_ids_json.into()));
         params.insert("ts".into(), DataValue::Num(Num::Float(ts)));
 
-        self.db.run_script(
-            "?[session_id, turn_number, claim_ids, timestamp] <- \
+        self.db
+            .run_script(
+                "?[session_id, turn_number, claim_ids, timestamp] <- \
              [[$sid, $turn, $cids, $ts]] \
              :put turns { session_id, turn_number => claim_ids, timestamp }",
-            params,
-            ScriptMutability::Mutable,
-        )
-        .map_err(|e| Error::GraphStorage(format!("record_turn failed: {e}")))?;
+                params,
+                ScriptMutability::Mutable,
+            )
+            .map_err(|e| Error::GraphStorage(format!("record_turn failed: {e}")))?;
 
         Ok(())
     }
 
     /// Query all turns for a session, ordered by turn_number ascending.
-    pub fn query_turns_for_session(
-        &self,
-        session_id: &str,
-    ) -> Result<Vec<TurnRow>> {
+    pub fn query_turns_for_session(&self, session_id: &str) -> Result<Vec<TurnRow>> {
         let mut params = BTreeMap::new();
         params.insert("sid".into(), DataValue::Str(session_id.into()));
 
-        let result = self.db.run_script(
-            "?[turn_number, claim_ids, timestamp] := \
+        let result = self
+            .db
+            .run_script(
+                "?[turn_number, claim_ids, timestamp] := \
              *turns{session_id: $sid, turn_number, claim_ids, timestamp} \
              :order turn_number",
-            params,
-            ScriptMutability::Immutable,
-        )
-        .map_err(|e| Error::GraphStorage(format!("query_turns_for_session failed: {e}")))?;
+                params,
+                ScriptMutability::Immutable,
+            )
+            .map_err(|e| Error::GraphStorage(format!("query_turns_for_session failed: {e}")))?;
 
         Ok(result
             .rows
@@ -2842,7 +2833,11 @@ impl GraphStore {
                     DataValue::Num(Num::Int(n)) => *n as f64,
                     _ => 0.0,
                 };
-                TurnRow { turn_number, claim_ids, timestamp }
+                TurnRow {
+                    turn_number,
+                    claim_ids,
+                    timestamp,
+                }
             })
             .collect())
     }

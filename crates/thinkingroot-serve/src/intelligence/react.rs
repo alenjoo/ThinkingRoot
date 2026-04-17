@@ -50,7 +50,6 @@ the latest value. \
 (7) If the answer is genuinely not in the notes, respond with exactly: \
 \"I don't have enough information to answer that.\"";
 
-
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -58,9 +57,18 @@ the latest value. \
 /// Which retrieval tool a ReAct turn used.
 #[derive(Debug, Clone)]
 pub enum ReActTool {
-    SearchEvents { entity: String, start_iso: String, end_iso: String },
-    SearchClaims { query: String, claim_type: Option<String> },
-    TraverseGraph { entity: String },
+    SearchEvents {
+        entity: String,
+        start_iso: String,
+        end_iso: String,
+    },
+    SearchClaims {
+        query: String,
+        claim_type: Option<String>,
+    },
+    TraverseGraph {
+        entity: String,
+    },
 }
 
 /// A single (thought, tool, observation) step in the ReAct loop.
@@ -193,9 +201,7 @@ impl<'q> ReActEngine<'q> {
                             entity
                         ));
                         let mut sorted = entity_hits.clone();
-                        sorted.sort_by(|a, b| {
-                            a.normalized_date.cmp(&b.normalized_date)
-                        });
+                        sorted.sort_by(|a, b| a.normalized_date.cmp(&b.normalized_date));
                         for ev in sorted {
                             let date = if !ev.normalized_date.is_empty() {
                                 format!(" [{}]", ev.normalized_date)
@@ -244,8 +250,10 @@ impl<'q> ReActEngine<'q> {
                     || lower_q.contains("how many months")
                     || lower_q.contains("how long");
                 if needs_ordering {
-                    if let Ok(all_events) =
-                        self.engine.query_events_in_range(self.ws, 0.0, f64::MAX).await
+                    if let Ok(all_events) = self
+                        .engine
+                        .query_events_in_range(self.ws, 0.0, f64::MAX)
+                        .await
                     {
                         let entity_lower = entity_name.to_lowercase();
                         let mut relevant: Vec<_> = all_events
@@ -387,11 +395,12 @@ impl<'q> ReActEngine<'q> {
                         });
                         match temporal {
                             Some(label) => obs.push_str(&format!(
-                                "[{:.2}][{label}] {}\n", c.confidence, c.statement
+                                "[{:.2}][{label}] {}\n",
+                                c.confidence, c.statement
                             )),
-                            None => obs.push_str(&format!(
-                                "[{:.2}] {}\n", c.confidence, c.statement
-                            )),
+                            None => {
+                                obs.push_str(&format!("[{:.2}] {}\n", c.confidence, c.statement))
+                            }
                         }
                     }
                     obs
@@ -464,7 +473,11 @@ impl<'q> ReActEngine<'q> {
         if notes.is_empty() {
             answer.push_str("No relevant information found in the knowledge base.\n");
         }
-        ReActResult { answer, steps, turns_used }
+        ReActResult {
+            answer,
+            steps,
+            turns_used,
+        }
     }
 
     async fn synthesize_async(
@@ -482,13 +495,16 @@ impl<'q> ReActEngine<'q> {
             } else {
                 notes.join("\n\n")
             };
-            let user_msg = format!(
-                "## Retrieved Memory Notes\n\n{notes_block}\n\n## Question\n\n{query}"
-            );
+            let user_msg =
+                format!("## Retrieved Memory Notes\n\n{notes_block}\n\n## Question\n\n{query}");
 
             match llm.chat(SYNTHESIS_SYSTEM_PROMPT, &user_msg).await {
                 Ok(answer) => {
-                    return ReActResult { answer, steps, turns_used };
+                    return ReActResult {
+                        answer,
+                        steps,
+                        turns_used,
+                    };
                 }
                 Err(e) => {
                     tracing::warn!("LLM synthesis failed, falling back to Chain-of-Note: {e}");
@@ -608,10 +624,28 @@ pub fn extract_subject_entity(q: &str) -> Option<String> {
             // Skip common sentence-starters that aren't entities.
             !matches!(
                 s.as_str(),
-                "What" | "When" | "Where" | "Who" | "Why" | "How"
-                    | "Did" | "Does" | "Has" | "Have" | "Is" | "Are"
-                    | "Can" | "Could" | "Would" | "Should" | "Tell"
-                    | "Show" | "Give" | "Get" | "Find" | "List"
+                "What"
+                    | "When"
+                    | "Where"
+                    | "Who"
+                    | "Why"
+                    | "How"
+                    | "Did"
+                    | "Does"
+                    | "Has"
+                    | "Have"
+                    | "Is"
+                    | "Are"
+                    | "Can"
+                    | "Could"
+                    | "Would"
+                    | "Should"
+                    | "Tell"
+                    | "Show"
+                    | "Give"
+                    | "Get"
+                    | "Find"
+                    | "List"
             )
         })
         .collect();

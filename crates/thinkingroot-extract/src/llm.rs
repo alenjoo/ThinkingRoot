@@ -1098,7 +1098,8 @@ impl LlmClient {
             let chat_result = tokio::time::timeout(
                 tokio::time::Duration::from_secs(120),
                 self.provider.chat(prompts::SYSTEM_PROMPT, batch_prompt),
-            ).await;
+            )
+            .await;
 
             let provider_result = match chat_result {
                 Ok(r) => r,
@@ -1212,14 +1213,18 @@ impl LlmClient {
             let chat_result = tokio::time::timeout(
                 tokio::time::Duration::from_secs(45),
                 self.provider.chat(system, user),
-            ).await;
+            )
+            .await;
 
             let provider_result = match chat_result {
                 Ok(r) => r,
                 Err(_) => {
                     // Timed out — count as a transient error and retry.
                     normal_attempts += 1;
-                    tracing::warn!("LLM chat timed out after 45s, retrying ({normal_attempts}/{})...", self.max_retries);
+                    tracing::warn!(
+                        "LLM chat timed out after 45s, retrying ({normal_attempts}/{})...",
+                        self.max_retries
+                    );
                     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                     continue;
                 }
@@ -1233,8 +1238,7 @@ impl LlmClient {
                             model: self.provider.model_name().to_string(),
                         });
                     }
-                    let tokens =
-                        (system.len() + user.len() + output.text.len()) as u64 / 4;
+                    let tokens = (system.len() + user.len() + output.text.len()) as u64 / 4;
                     if let (Some(sched), Some(ticket)) = (&self.scheduler, opt_ticket) {
                         sched.record_success(tokens, &output.limits, ticket).await;
                     }
@@ -1256,8 +1260,7 @@ impl LlmClient {
                 }
                 Err(e) => {
                     normal_attempts += 1;
-                    let delay =
-                        (500u64 * 2u64.pow(normal_attempts.saturating_sub(1))).min(10_000);
+                    let delay = (500u64 * 2u64.pow(normal_attempts.saturating_sub(1))).min(10_000);
                     last_error = Some(e);
                     tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
                 }
@@ -1300,7 +1303,8 @@ impl LlmClient {
             let chat_result = tokio::time::timeout(
                 tokio::time::Duration::from_secs(120),
                 self.provider.chat(prompts::SYSTEM_PROMPT, &user_prompt),
-            ).await;
+            )
+            .await;
 
             let provider_output = match chat_result {
                 Ok(r) => r,
@@ -1753,7 +1757,10 @@ mod tests {
     fn context_window_groq_llama() {
         assert_eq!(model_context_window("llama-3.1-8b-instant"), 131_072);
         assert_eq!(model_context_window("llama-3.3-70b-versatile"), 131_072);
-        assert_eq!(model_context_window("meta-llama/llama-3.1-8b-instruct"), 131_072);
+        assert_eq!(
+            model_context_window("meta-llama/llama-3.1-8b-instruct"),
+            131_072
+        );
     }
 
     #[test]
@@ -1827,7 +1834,10 @@ mod tests {
     #[test]
     fn batch_size_perplexity_always_one() {
         let n = model_batch_size("perplexity", "sonar-pro", 2000);
-        assert_eq!(n, 1, "perplexity sonar must always return 1 — search-grounded");
+        assert_eq!(
+            n, 1,
+            "perplexity sonar must always return 1 — search-grounded"
+        );
     }
 
     #[test]
@@ -1923,7 +1933,9 @@ mod tests {
         // return the stored value — this is the path taken after `root setup` in a fresh shell.
         let env_var = "__TR_TEST_KEY_NOT_SET_7f3a9b__";
         // SAFETY: test-only mutation of env vars; tests using unique names avoid races.
-        unsafe { std::env::remove_var(env_var); }
+        unsafe {
+            std::env::remove_var(env_var);
+        }
 
         let cfg = thinkingroot_core::config::ProviderConfig {
             api_key_env: Some(env_var.to_string()),
@@ -1939,7 +1951,9 @@ mod tests {
     fn resolve_key_env_var_takes_priority_over_stored() {
         let env_var = "__TR_TEST_KEY_SET_9c1d2e__";
         // SAFETY: test-only mutation of env vars; tests using unique names avoid races.
-        unsafe { std::env::set_var(env_var, "live-env-value"); }
+        unsafe {
+            std::env::set_var(env_var, "live-env-value");
+        }
 
         let cfg = thinkingroot_core::config::ProviderConfig {
             api_key_env: Some(env_var.to_string()),
@@ -1948,7 +1962,9 @@ mod tests {
             default_model: None,
         };
         let result = resolve_key(Some(&cfg), env_var);
-        unsafe { std::env::remove_var(env_var); }
+        unsafe {
+            std::env::remove_var(env_var);
+        }
         assert_eq!(result.unwrap(), "live-env-value");
     }
 

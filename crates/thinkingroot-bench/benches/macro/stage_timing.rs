@@ -27,7 +27,9 @@ fn graph_insert_entities(bencher: divan::Bencher, scale: &Scale) {
         let tmpdir = TempDir::new().expect("failed to create tempdir");
         let graph = GraphStore::init(tmpdir.path()).expect("failed to init GraphStore");
         for entity in &entities {
-            graph.insert_entity(entity).expect("failed to insert entity");
+            graph
+                .insert_entity(entity)
+                .expect("failed to insert entity");
         }
         // keep tmpdir alive until end of measured body
         let _ = tmpdir;

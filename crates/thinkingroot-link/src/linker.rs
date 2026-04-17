@@ -167,7 +167,8 @@ impl<'a> Linker<'a> {
                 )
             })
             .collect();
-        self.graph.link_entities_for_source_batch(&relation_tuples)?;
+        self.graph
+            .link_entities_for_source_batch(&relation_tuples)?;
         output.relations_linked = relation_tuples.len();
 
         // Phase 4: Contradiction detection.
@@ -342,7 +343,8 @@ fn truncate(s: &str, max: usize) -> &str {
         s
     } else {
         // Find the largest char boundary at or before max bytes.
-        let boundary = s.char_indices()
+        let boundary = s
+            .char_indices()
             .map(|(i, _)| i)
             .take_while(|&i| i <= max)
             .last()

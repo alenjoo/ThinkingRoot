@@ -47,10 +47,7 @@ impl SemanticJudge {
         }
 
         // Flatten: [claim0, src0, claim1, src1, ...]
-        let texts: Vec<&str> = pairs
-            .iter()
-            .flat_map(|(c, s)| [*c, *s])
-            .collect();
+        let texts: Vec<&str> = pairs.iter().flat_map(|(c, s)| [*c, *s]).collect();
 
         match vector_store.embed_texts(&texts) {
             Ok(embeddings) if embeddings.len() == texts.len() => pairs

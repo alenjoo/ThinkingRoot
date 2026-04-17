@@ -28,7 +28,9 @@ fn fingerprint_check_all_cached(bencher: divan::Bencher, scale: &Scale) {
 
     bencher.bench_local(|| {
         for i in 0..100_usize {
-            let key = blake3::hash(format!("hash_{i}").as_bytes()).to_hex().to_string();
+            let key = blake3::hash(format!("hash_{i}").as_bytes())
+                .to_hex()
+                .to_string();
             let _ = fix
                 .graph
                 .source_hash_exists(&key)

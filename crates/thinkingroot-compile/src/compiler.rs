@@ -90,11 +90,7 @@ impl Compiler {
                 self.compile_decision_log(graph),
                 "decision-log.md",
             ),
-            (
-                "task pack",
-                self.compile_task_pack(graph),
-                "task-pack.md",
-            ),
+            ("task pack", self.compile_task_pack(graph), "task-pack.md"),
             (
                 "agent brief",
                 self.compile_agent_brief(graph),

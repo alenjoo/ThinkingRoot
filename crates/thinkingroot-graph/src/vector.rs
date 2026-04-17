@@ -213,7 +213,11 @@ mod inner {
             std::fs::rename(&tmp, &self.persist_path)
                 .map_err(|e| Error::io_path(&self.persist_path, e))?;
 
-            tracing::debug!("saved {} vectors to disk ({} bytes)", self.index.len(), buf.len());
+            tracing::debug!(
+                "saved {} vectors to disk ({} bytes)",
+                self.index.len(),
+                buf.len()
+            );
             Ok(())
         }
 
@@ -239,7 +243,10 @@ mod inner {
 
         /// Insert pre-computed embeddings directly — no model inference.
         /// Used during merge to import branch vectors into main without re-embedding.
-        pub fn upsert_raw_batch(&mut self, items: Vec<(String, Vec<f32>, String)>) -> Result<usize> {
+        pub fn upsert_raw_batch(
+            &mut self,
+            items: Vec<(String, Vec<f32>, String)>,
+        ) -> Result<usize> {
             let count = items.len();
             for (id, vec, meta) in items {
                 self.index.insert(id, (vec, meta));
@@ -275,11 +282,18 @@ mod inner {
             }
 
             // Simple deterministic LCG to generate projection bases
-            struct Lcg { state: u64 }
+            struct Lcg {
+                state: u64,
+            }
             impl Lcg {
-                fn new(seed: u64) -> Self { Self { state: seed } }
+                fn new(seed: u64) -> Self {
+                    Self { state: seed }
+                }
                 fn next_f32(&mut self) -> f32 {
-                    self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    self.state = self
+                        .state
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
                     let int_val = (self.state >> 32) as u32;
                     (int_val as f32 / (u32::MAX as f32)) * 2.0 - 1.0
                 }
@@ -361,7 +375,9 @@ mod inner {
             let mut map = HashMap::new();
 
             let read_u32 = |buf: &mut &[u8]| -> Option<u32> {
-                if buf.len() < 4 { return None; }
+                if buf.len() < 4 {
+                    return None;
+                }
                 let v = u32::from_le_bytes(buf[..4].try_into().ok()?);
                 *buf = &buf[4..];
                 Some(v)
@@ -372,7 +388,9 @@ mod inner {
                     Some(n) => n as usize,
                     None => break,
                 };
-                if data.len() < id_len { break; }
+                if data.len() < id_len {
+                    break;
+                }
                 let id = match std::str::from_utf8(&data[..id_len]) {
                     Ok(s) => s.to_string(),
                     Err(_) => break,
@@ -383,7 +401,9 @@ mod inner {
                     Some(n) => n as usize,
                     None => break,
                 };
-                if data.len() < meta_len { break; }
+                if data.len() < meta_len {
+                    break;
+                }
                 let meta = match std::str::from_utf8(&data[..meta_len]) {
                     Ok(s) => s.to_string(),
                     Err(_) => break,
@@ -394,7 +414,9 @@ mod inner {
                     Some(n) => n as usize,
                     None => break,
                 };
-                if data.len() < dims * 4 { break; }
+                if data.len() < dims * 4 {
+                    break;
+                }
                 let vec: Vec<f32> = data[..dims * 4]
                     .chunks_exact(4)
                     .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
@@ -477,7 +499,10 @@ mod inner {
             vec![]
         }
 
-        pub fn upsert_raw_batch(&mut self, _items: Vec<(String, Vec<f32>, String)>) -> Result<usize> {
+        pub fn upsert_raw_batch(
+            &mut self,
+            _items: Vec<(String, Vec<f32>, String)>,
+        ) -> Result<usize> {
             Ok(0)
         }
 

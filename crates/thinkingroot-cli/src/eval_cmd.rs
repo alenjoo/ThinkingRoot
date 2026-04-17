@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use thinkingroot_core::Config;
 use thinkingroot_extract::llm::LlmClient;
 use thinkingroot_serve::engine::QueryEngine;
-use thinkingroot_serve::intelligence::synthesizer::{ask, AskRequest};
+use thinkingroot_serve::intelligence::synthesizer::{AskRequest, ask};
 
 // ---------------------------------------------------------------------------
 // Dataset types
@@ -52,7 +52,9 @@ pub struct LongMemEvalQuestion {
     pub answer_session_ids: Vec<serde_json::Value>,
 }
 
-fn deserialize_answer<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<String, D::Error> {
+fn deserialize_answer<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<String, D::Error> {
     let v = serde_json::Value::deserialize(d)?;
     Ok(match v {
         serde_json::Value::String(s) => s,
@@ -68,7 +70,11 @@ struct CategoryStats {
 
 impl CategoryStats {
     fn accuracy(&self) -> f64 {
-        if self.total == 0 { 0.0 } else { self.correct as f64 / self.total as f64 * 100.0 }
+        if self.total == 0 {
+            0.0
+        } else {
+            self.correct as f64 / self.total as f64 * 100.0
+        }
     }
 }
 
@@ -158,7 +164,9 @@ pub async fn run_eval(
         "\n{} LongMemEval — {} questions{}",
         style("●").cyan().bold(),
         style(questions.len()).bold(),
-        category_filter.map(|c| format!(" (category: {c})")).unwrap_or_default()
+        category_filter
+            .map(|c| format!(" (category: {c})"))
+            .unwrap_or_default()
     );
 
     if questions.is_empty() {
@@ -178,11 +186,17 @@ pub async fn run_eval(
 
     let synthesis_llm: Option<Arc<LlmClient>> = match LlmClient::new(&config.llm).await {
         Ok(c) => {
-            println!("  Synthesis LLM : {} / {}", config.llm.default_provider, config.llm.extraction_model);
+            println!(
+                "  Synthesis LLM : {} / {}",
+                config.llm.default_provider, config.llm.extraction_model
+            );
             Some(Arc::new(c))
         }
         Err(e) => {
-            println!("  {} Synthesis LLM unavailable — keyword fallback: {e}", style("Warning:").yellow());
+            println!(
+                "  {} Synthesis LLM unavailable — keyword fallback: {e}",
+                style("Warning:").yellow()
+            );
             None
         }
     };
@@ -190,26 +204,42 @@ pub async fn run_eval(
     let judge_llm: Option<Arc<LlmClient>> = match judge_deployment {
         Some(deploy) if config.llm.default_provider == "azure" => {
             let result: anyhow::Result<LlmClient> = (|| {
-                let azure_cfg = config.llm.providers.azure.as_ref()
+                let azure_cfg = config
+                    .llm
+                    .providers
+                    .azure
+                    .as_ref()
                     .context("azure provider not configured")?;
-                let key_env = azure_cfg.api_key_env.as_deref().unwrap_or("AZURE_OPENAI_API_KEY");
-                let key = std::env::var(key_env)
-                    .with_context(|| format!("env var {key_env} not set"))?;
+                let key_env = azure_cfg
+                    .api_key_env
+                    .as_deref()
+                    .unwrap_or("AZURE_OPENAI_API_KEY");
+                let key =
+                    std::env::var(key_env).with_context(|| format!("env var {key_env} not set"))?;
                 let mut judge_azure_cfg = azure_cfg.clone();
                 judge_azure_cfg.deployment = Some(deploy.to_string());
                 LlmClient::for_azure_deployment(&key, deploy, &judge_azure_cfg)
                     .map_err(|e| anyhow::anyhow!("{e}"))
             })();
             match result {
-                Ok(c) => { println!("  Judge LLM     : azure/{deploy}"); Some(Arc::new(c)) }
+                Ok(c) => {
+                    println!("  Judge LLM     : azure/{deploy}");
+                    Some(Arc::new(c))
+                }
                 Err(e) => {
-                    println!("  {} Judge LLM init failed, using synthesis: {e}", style("Warning:").yellow());
+                    println!(
+                        "  {} Judge LLM init failed, using synthesis: {e}",
+                        style("Warning:").yellow()
+                    );
                     synthesis_llm.clone()
                 }
             }
         }
         _ => {
-            println!("  Judge LLM     : {} / {} (same as synthesis)", config.llm.default_provider, config.llm.extraction_model);
+            println!(
+                "  Judge LLM     : {} / {} (same as synthesis)",
+                config.llm.default_provider, config.llm.extraction_model
+            );
             synthesis_llm.clone()
         }
     };
@@ -221,7 +251,8 @@ pub async fn run_eval(
     let mut overall_correct = 0usize;
 
     for (i, q) in questions.iter().enumerate() {
-        let allowed_sources: HashSet<String> = q.haystack_session_ids
+        let allowed_sources: HashSet<String> = q
+            .haystack_session_ids
             .iter()
             .map(|v| match v {
                 serde_json::Value::String(s) => s.clone(),
@@ -229,7 +260,8 @@ pub async fn run_eval(
             })
             .collect();
 
-        let session_dates: HashMap<String, String> = q.haystack_session_ids
+        let session_dates: HashMap<String, String> = q
+            .haystack_session_ids
             .iter()
             .zip(q.haystack_dates.iter())
             .map(|(sid, date)| {
@@ -241,7 +273,8 @@ pub async fn run_eval(
             })
             .collect();
 
-        let answer_sids: Vec<String> = q.answer_session_ids
+        let answer_sids: Vec<String> = q
+            .answer_session_ids
             .iter()
             .map(|v| match v {
                 serde_json::Value::String(s) => s.clone(),
@@ -263,13 +296,8 @@ pub async fn run_eval(
         let response = ask(&engine, synthesis_llm.clone(), &ask_req).await;
         let predicted = response.answer;
 
-        let correct = judge_answer(
-            &judge_llm,
-            &q.question,
-            &q.answer,
-            &predicted,
-            &q.category,
-        ).await;
+        let correct =
+            judge_answer(&judge_llm, &q.question, &q.answer, &predicted, &q.category).await;
 
         let stats = category_stats.entry(q.category.clone()).or_default();
         stats.total += 1;
@@ -288,11 +316,18 @@ pub async fn run_eval(
             failure_log.push(entry.to_string());
         }
 
-        let marker = if correct { style("✓").green() } else { style("✗").red() };
+        let marker = if correct {
+            style("✓").green()
+        } else {
+            style("✗").red()
+        };
         let running_pct = overall_correct as f64 / (i + 1) as f64 * 100.0;
         println!(
             "  [{:>4}/{}] {} [{:.0}%] [{}] {}",
-            i + 1, questions.len(), marker, running_pct,
+            i + 1,
+            questions.len(),
+            marker,
+            running_pct,
             style(&q.category).dim(),
             truncate_chars(&q.question, 65),
         );
@@ -321,7 +356,13 @@ pub async fn run_eval(
         } else {
             style(format!("{:>6.1}%", stats.accuracy())).red()
         };
-        println!("  {:>30}  {:>3}/{:<3}  {}", style(cat.as_str()).cyan(), stats.correct, stats.total, color);
+        println!(
+            "  {:>30}  {:>3}/{:<3}  {}",
+            style(cat.as_str()).cyan(),
+            stats.correct,
+            stats.total,
+            color
+        );
     }
 
     println!("{}", style("─".repeat(60)).dim());
@@ -332,14 +373,28 @@ pub async fn run_eval(
     } else {
         style(format!("{overall_acc:.1}%")).bold().red()
     };
-    println!("  Overall: {}/{} = {}", overall_correct, questions.len(), acc_style);
+    println!(
+        "  Overall: {}/{} = {}",
+        overall_correct,
+        questions.len(),
+        acc_style
+    );
 
     if overall_acc >= 98.0 {
-        println!("\n  {} World-record LongMemEval accuracy!", style("★").yellow().bold());
+        println!(
+            "\n  {} World-record LongMemEval accuracy!",
+            style("★").yellow().bold()
+        );
     } else if overall_acc >= 95.0 {
-        println!("\n  {} World-class accuracy — push for 98%+", style("★").yellow().bold());
+        println!(
+            "\n  {} World-class accuracy — push for 98%+",
+            style("★").yellow().bold()
+        );
     } else if overall_acc >= 80.0 {
-        println!("\n  {} Strong result — optimise retrieval to push toward 95%+", style("→").cyan());
+        println!(
+            "\n  {} Strong result — optimise retrieval to push toward 95%+",
+            style("→").cyan()
+        );
     }
 
     println!();
@@ -360,7 +415,8 @@ async fn judge_answer(
     // Fast path: abstention match
     let gt_l = ground_truth.to_lowercase();
     let pred_l = predicted.to_lowercase();
-    let gt_abstain = gt_l.contains("not enough") || gt_l.contains("information provided is not enough");
+    let gt_abstain =
+        gt_l.contains("not enough") || gt_l.contains("information provided is not enough");
     let pred_abstain = pred_l.contains("not enough")
         || pred_l.contains("information provided is not enough")
         || pred_l.contains("cannot be determined")
@@ -380,7 +436,9 @@ async fn judge_answer(
         || pred_l.contains("not disclosed")
         || pred_l.contains("not provided");
 
-    if gt_abstain && pred_abstain { return true; }
+    if gt_abstain && pred_abstain {
+        return true;
+    }
 
     if quick_match(ground_truth, predicted) {
         return true;
@@ -388,15 +446,23 @@ async fn judge_answer(
 
     if let Some(j) = llm {
         let (system, user_msg) = if category == "single-session-preference" {
-            (PREFERENCE_JUDGE_SYSTEM,
-             format!("QUESTION: {question}\nRUBRIC: {ground_truth}\nPREDICTED: {predicted}"))
+            (
+                PREFERENCE_JUDGE_SYSTEM,
+                format!("QUESTION: {question}\nRUBRIC: {ground_truth}\nPREDICTED: {predicted}"),
+            )
         } else {
-            (JUDGE_SYSTEM,
-             format!("QUESTION: {question}\nGROUND TRUTH: {ground_truth}\nPREDICTED: {predicted}"))
+            (
+                JUDGE_SYSTEM,
+                format!(
+                    "QUESTION: {question}\nGROUND TRUTH: {ground_truth}\nPREDICTED: {predicted}"
+                ),
+            )
         };
 
         let chat_fut = j.chat(system, &user_msg);
-        if let Ok(Ok(resp)) = tokio::time::timeout(std::time::Duration::from_secs(45), chat_fut).await {
+        if let Ok(Ok(resp)) =
+            tokio::time::timeout(std::time::Duration::from_secs(45), chat_fut).await
+        {
             return resp.trim().starts_with('1');
         }
     }
@@ -409,8 +475,12 @@ fn quick_match(ground_truth: &str, predicted: &str) -> bool {
     let gt = ground_truth.to_lowercase().trim().to_string();
     let pred = predicted.to_lowercase().trim().to_string();
 
-    if gt == pred { return true; }
-    if pred.contains(&gt) { return true; }
+    if gt == pred {
+        return true;
+    }
+    if pred.contains(&gt) {
+        return true;
+    }
 
     let gt_nums = extract_numbers(&gt);
     let pred_nums = extract_numbers(&pred);

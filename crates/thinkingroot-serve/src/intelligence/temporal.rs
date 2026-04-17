@@ -83,9 +83,7 @@ pub fn compute_temporal_anchors(
         ("sunday", Weekday::Sun),
     ];
     for (name, wd) in WEEKDAYS {
-        if q_lower.contains(&format!("last {name}"))
-            || q_lower.contains(&format!("past {name}"))
-        {
+        if q_lower.contains(&format!("last {name}")) || q_lower.contains(&format!("past {name}")) {
             let d = last_weekday_before(today, *wd);
             out.push_str(&format!("\"Last {}\" = {}\n", name, d.format("%Y-%m-%d")));
             found = true;
@@ -111,7 +109,8 @@ pub fn compute_temporal_anchors(
             let unit = words.get(i + 1).copied().unwrap_or("");
             let after_unit = words.get(i + 2).copied().unwrap_or("");
             let after_after = words.get(i + 3).copied().unwrap_or("");
-            let is_ago = after_unit == "ago" || after_after == "ago"
+            let is_ago = after_unit == "ago"
+                || after_after == "ago"
                 || after_unit.starts_with("ago")
                 || after_after.starts_with("ago");
 
@@ -139,9 +138,7 @@ pub fn compute_temporal_anchors(
         .filter_map(|asid| {
             let date_str = session_dates
                 .iter()
-                .find(|(sid, _)| {
-                    asid.contains(sid.as_str()) || sid.contains(asid.as_str())
-                })
+                .find(|(sid, _)| asid.contains(sid.as_str()) || sid.contains(asid.as_str()))
                 .map(|(_, d)| d.clone())
                 .unwrap_or_default();
             parse_question_date(&date_str).map(|d| {
@@ -198,7 +195,10 @@ mod tests {
             &HashMap::new(),
             &[],
         );
-        assert!(anchors.contains("2023-05-27"), "Expected last Saturday date in: {anchors}");
+        assert!(
+            anchors.contains("2023-05-27"),
+            "Expected last Saturday date in: {anchors}"
+        );
     }
 
     #[test]
@@ -209,7 +209,10 @@ mod tests {
             &HashMap::new(),
             &[],
         );
-        assert!(anchors.contains("2023-05-27"), "Expected 3 days ago date in: {anchors}");
+        assert!(
+            anchors.contains("2023-05-27"),
+            "Expected 3 days ago date in: {anchors}"
+        );
     }
 
     #[test]

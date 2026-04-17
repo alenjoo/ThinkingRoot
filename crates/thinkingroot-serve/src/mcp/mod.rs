@@ -164,7 +164,10 @@ pub async fn dispatch(
     let id = request.id.clone();
     match request.method.as_str() {
         "initialize" => {
-            let requested = request.params.get("protocolVersion").and_then(|v| v.as_str());
+            let requested = request
+                .params
+                .get("protocolVersion")
+                .and_then(|v| v.as_str());
             JsonRpcResponse::success(id, server_info(requested))
         }
         "notifications/initialized" => JsonRpcResponse::success(id, Value::Null),

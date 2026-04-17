@@ -109,7 +109,9 @@ fn parse_and_index(bencher: divan::Bencher, scale: &Scale) {
         for doc in &docs {
             let source = thinkingroot_core::Source::new(doc.uri.clone(), doc.source_type)
                 .with_hash(doc.content_hash.clone());
-            graph.insert_source(&source).expect("failed to insert source");
+            graph
+                .insert_source(&source)
+                .expect("failed to insert source");
         }
 
         // Return the count to prevent the compiler from eliminating the work

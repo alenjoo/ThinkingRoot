@@ -240,42 +240,44 @@ pub async fn run_pipeline(
                 .with_known_entities(ctx_with_relations);
             if let Some(ref tx) = progress {
                 let tx_chunk = tx.clone();
-                let pf = Arc::new(move |event: thinkingroot_extract::ExtractionProgressEvent| {
-                    let progress_event = match event {
-                        thinkingroot_extract::ExtractionProgressEvent::Start {
-                            total_chunks,
-                            batch_size,
-                            total_batches,
-                        } => ProgressEvent::ExtractionStart {
-                            total_chunks,
-                            batch_size,
-                            total_batches,
-                        },
-                        thinkingroot_extract::ExtractionProgressEvent::BatchStart {
-                            batch_index,
-                            total_batches,
-                            range_start,
-                            range_end,
-                            batch_chunks,
-                        } => ProgressEvent::ExtractionBatchStart {
-                            batch_index,
-                            total_batches,
-                            range_start,
-                            range_end,
-                            batch_chunks,
-                        },
-                        thinkingroot_extract::ExtractionProgressEvent::ChunkDone {
-                            done,
-                            total,
-                            source_uri,
-                        } => ProgressEvent::ChunkDone {
-                            done,
-                            total,
-                            source_uri,
-                        },
-                    };
-                    let _ = tx_chunk.send(progress_event);
-                }) as thinkingroot_extract::ChunkProgressFn;
+                let pf = Arc::new(
+                    move |event: thinkingroot_extract::ExtractionProgressEvent| {
+                        let progress_event = match event {
+                            thinkingroot_extract::ExtractionProgressEvent::Start {
+                                total_chunks,
+                                batch_size,
+                                total_batches,
+                            } => ProgressEvent::ExtractionStart {
+                                total_chunks,
+                                batch_size,
+                                total_batches,
+                            },
+                            thinkingroot_extract::ExtractionProgressEvent::BatchStart {
+                                batch_index,
+                                total_batches,
+                                range_start,
+                                range_end,
+                                batch_chunks,
+                            } => ProgressEvent::ExtractionBatchStart {
+                                batch_index,
+                                total_batches,
+                                range_start,
+                                range_end,
+                                batch_chunks,
+                            },
+                            thinkingroot_extract::ExtractionProgressEvent::ChunkDone {
+                                done,
+                                total,
+                                source_uri,
+                            } => ProgressEvent::ChunkDone {
+                                done,
+                                total,
+                                source_uri,
+                            },
+                        };
+                        let _ = tx_chunk.send(progress_event);
+                    },
+                ) as thinkingroot_extract::ChunkProgressFn;
                 e.with_progress(pf)
             } else {
                 e
@@ -358,10 +360,7 @@ pub async fn run_pipeline(
             .await
             {
                 Ok(Ok(pool)) => {
-                    tracing::info!(
-                        "NLI pool ready: {} parallel workers",
-                        pool.num_workers
-                    );
+                    tracing::info!("NLI pool ready: {} parallel workers", pool.num_workers);
                     Some(pool)
                 }
                 Ok(Err(e)) => {
@@ -381,14 +380,12 @@ pub async fn run_pipeline(
         extraction.claims = llm_claims;
         let pre_count = extraction.claims.len();
         let grounder = {
-            let g = thinkingroot_ground::Grounder::new(
-                thinkingroot_ground::GroundingConfig::default(),
-            );
+            let g =
+                thinkingroot_ground::Grounder::new(thinkingroot_ground::GroundingConfig::default());
             if let Some(ref tx) = progress {
                 let tx_ground = tx.clone();
                 let pf = Arc::new(move |done: usize, total: usize| {
-                    let _ = tx_ground
-                        .send(ProgressEvent::GroundingProgress { done, total });
+                    let _ = tx_ground.send(ProgressEvent::GroundingProgress { done, total });
                 }) as thinkingroot_ground::GroundingProgressFn;
                 g.with_progress(pf)
             } else {
@@ -572,8 +569,7 @@ pub async fn run_pipeline(
             if let Some(ref tx) = progress {
                 let tx_compile = tx.clone();
                 let pf = Arc::new(move |done: usize, total: usize| {
-                    let _ = tx_compile
-                        .send(ProgressEvent::CompilationProgress { done, total });
+                    let _ = tx_compile.send(ProgressEvent::CompilationProgress { done, total });
                 }) as thinkingroot_compile::CompileProgressFn;
                 c.with_progress(pf)
             } else {
@@ -854,8 +850,7 @@ pub async fn run_pipeline(
         if let Some(ref tx) = progress {
             let tx_compile = tx.clone();
             let pf = Arc::new(move |done: usize, total: usize| {
-                let _ = tx_compile
-                    .send(ProgressEvent::CompilationProgress { done, total });
+                let _ = tx_compile.send(ProgressEvent::CompilationProgress { done, total });
             }) as thinkingroot_compile::CompileProgressFn;
             c.with_progress(pf)
         } else {

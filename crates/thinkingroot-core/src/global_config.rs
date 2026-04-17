@@ -75,16 +75,36 @@ impl GlobalConfig {
     fn without_keys(&self) -> Self {
         let mut c = self.clone();
         let p = &mut c.llm.providers;
-        if let Some(ref mut cfg) = p.openai      { cfg.api_key = None; }
-        if let Some(ref mut cfg) = p.anthropic   { cfg.api_key = None; }
-        if let Some(ref mut cfg) = p.groq        { cfg.api_key = None; }
-        if let Some(ref mut cfg) = p.deepseek    { cfg.api_key = None; }
-        if let Some(ref mut cfg) = p.openrouter  { cfg.api_key = None; }
-        if let Some(ref mut cfg) = p.together    { cfg.api_key = None; }
-        if let Some(ref mut cfg) = p.perplexity  { cfg.api_key = None; }
-        if let Some(ref mut cfg) = p.litellm     { cfg.api_key = None; }
-        if let Some(ref mut cfg) = p.custom      { cfg.api_key = None; }
-        if let Some(ref mut cfg) = p.azure       { cfg.api_key = None; }
+        if let Some(ref mut cfg) = p.openai {
+            cfg.api_key = None;
+        }
+        if let Some(ref mut cfg) = p.anthropic {
+            cfg.api_key = None;
+        }
+        if let Some(ref mut cfg) = p.groq {
+            cfg.api_key = None;
+        }
+        if let Some(ref mut cfg) = p.deepseek {
+            cfg.api_key = None;
+        }
+        if let Some(ref mut cfg) = p.openrouter {
+            cfg.api_key = None;
+        }
+        if let Some(ref mut cfg) = p.together {
+            cfg.api_key = None;
+        }
+        if let Some(ref mut cfg) = p.perplexity {
+            cfg.api_key = None;
+        }
+        if let Some(ref mut cfg) = p.litellm {
+            cfg.api_key = None;
+        }
+        if let Some(ref mut cfg) = p.custom {
+            cfg.api_key = None;
+        }
+        if let Some(ref mut cfg) = p.azure {
+            cfg.api_key = None;
+        }
         c
     }
 }
@@ -157,15 +177,15 @@ impl Credentials {
     /// `resolve_key` can find them without reading the credentials file again.
     pub fn inject_into(&self, llm: &mut crate::config::LlmConfig) {
         let p = &mut llm.providers;
-        inject_provider(&mut p.openai,     "OPENAI_API_KEY",     &self.keys);
-        inject_provider(&mut p.anthropic,  "ANTHROPIC_API_KEY",  &self.keys);
-        inject_provider(&mut p.groq,       "GROQ_API_KEY",       &self.keys);
-        inject_provider(&mut p.deepseek,   "DEEPSEEK_API_KEY",   &self.keys);
+        inject_provider(&mut p.openai, "OPENAI_API_KEY", &self.keys);
+        inject_provider(&mut p.anthropic, "ANTHROPIC_API_KEY", &self.keys);
+        inject_provider(&mut p.groq, "GROQ_API_KEY", &self.keys);
+        inject_provider(&mut p.deepseek, "DEEPSEEK_API_KEY", &self.keys);
         inject_provider(&mut p.openrouter, "OPENROUTER_API_KEY", &self.keys);
-        inject_provider(&mut p.together,   "TOGETHER_API_KEY",   &self.keys);
+        inject_provider(&mut p.together, "TOGETHER_API_KEY", &self.keys);
         inject_provider(&mut p.perplexity, "PERPLEXITY_API_KEY", &self.keys);
-        inject_provider(&mut p.litellm,    "LITELLM_API_KEY",    &self.keys);
-        inject_provider(&mut p.custom,     "CUSTOM_LLM_API_KEY", &self.keys);
+        inject_provider(&mut p.litellm, "LITELLM_API_KEY", &self.keys);
+        inject_provider(&mut p.custom, "CUSTOM_LLM_API_KEY", &self.keys);
         // Azure uses a different struct type but the same pattern.
         if let Some(ref mut az) = p.azure {
             let env_var = az.api_key_env.as_deref().unwrap_or("AZURE_OPENAI_API_KEY");
