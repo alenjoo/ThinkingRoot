@@ -7,7 +7,7 @@
 
 <br/>
 
-**Compiled knowledge infrastructure for AI agents**
+**Compiled knowledge infrastructure for AI agents — works like a secondary brain.**
 
 *The world's first knowledge database that is simultaneously the fastest (0.117ms p95) and the most accurate (91.2% LongMemEval) for AI agents.*
 
@@ -29,7 +29,9 @@
 
 ## What is ThinkingRoot?
 
-> *"You know how code has compilers? ThinkingRoot is a compiler for knowledge."*
+> **Code has GitHub. Models have HuggingFace. Compiled Knowledge has ThinkingRoot.**
+> 
+> *Building the "GitHub of Knowledge" — an infrastructure layer that treats knowledge preparation as a compilation problem.*
 
 ThinkingRoot compiles **anything** — your entire codebase, docs, PDFs, notes, git history — into a **typed, verified, linked knowledge graph** that your AI agents can query in milliseconds.
 
@@ -270,6 +272,20 @@ ThinkingRoot is not a docs tool. It compiles **your entire codebase** — and un
 
 ---
 
+## Build the Ultimate Secondary Brain (No Fine-Tuning Required)
+
+ThinkingRoot is designed for **anyone** — whether you are a **student**, **developer**, **researcher**, or **business**. 
+
+You can compile your raw data (codebases, research papers, business documents) in seconds, connect your favourite AI tools via MCP, or build entire autonomous agent pipelines directly on top of the ThinkingRoot infrastructure. 
+
+Because of our native support for isolated **streaming sessions** and **knowledge branches**, ThinkingRoot acts as an extremely efficient, verifiable **secondary brain**. 
+
+> **You no longer need to fine-tune LLMs.** Everything your agent needs is compiled, typed, and injected into context identically to how a human reads a curated dossier. 
+
+Build agent automations, research assistants, or intelligent enterprise search without ever paying to retrain a model.
+
+---
+
 ## Knowledge Version Control
 
 ThinkingRoot has a full knowledge version control system — like git, but for compiled knowledge.
@@ -504,34 +520,27 @@ The knowledge is **real** — extracted from your actual code and docs, source-l
 
 ---
 
-## CompAG — The Compilation-for-Agents Protocol
+## CompAG: Compile-Augmented Generation
 
-> *CompAG (Compilation for AI Agents) is the architectural principle that makes ThinkingRoot different from every other memory tool: knowledge must be compiled, grounded, and verified before an agent ever reads it — not retrieved on-demand, not summarised at query time, not sent raw.*
+> *CompAG (Compile-Augmented Generation) is a new paradigm that treats AI agent knowledge as a compilation problem, not a retrieval problem.*
 
-Every other AI memory system works like this:
-
-```
-Agent asks question
-        ↓
-Search raw documents / chunks
-        ↓
-LLM reads chunks + generates answer
-        ↓
-Hope it's correct
-```
-
-ThinkingRoot inverts this entirely with CompAG:
+Every other AI memory system (like RAG) works like this:
 
 ```
-Developer compiles codebase / docs ONCE
-        ↓
-Grounding Tribunal rejects hallucinations
-        ↓
-Knowledge graph: verified claims + typed entities + relations
-        ↓
-Agent reads 2K tokens of compiled, authenticated facts
-        ↓
-Answer is grounded in source-locked reality
+Query time:
+  raw text chunks → embed → similarity search → dump into context → LLM figures it out
+```
+
+RAG pushes all understanding to the LLM at runtime, from unverified raw text. The LLM must resolve contradictions, assess staleness, infer types, and reconstruct relationships — all inside a single context window, under token pressure, with no guarantee of correctness.
+
+ThinkingRoot shifts the hard work to compile time with CompAG:
+
+```
+Compile time (once, offline):
+  raw sources → parse → extract → verify → type → link → deduplicate → health-score → serve
+
+Query time (fast, cheap, reliable):
+  pre-verified typed claim + confidence + grounding evidence → 2K tokens, not 50K
 ```
 
 ### The CompAG Guarantee
@@ -604,26 +613,21 @@ Your codebase / docs
 
 ---
 
-## Quick Start
+## Quick Start & Zero-Friction Onboarding
 
-### Install
+ThinkingRoot is designed to take you from 0 to a compiled knowledge graph and MCP integration in under 2 minutes. 
 
-**Homebrew (macOS / Linux)**
+### 1. Install
+
+**macOS / Linux (Homebrew)**
 ```bash
 brew install thinkingroot
 ```
 
-**Cargo**
+**From Source / Cargo**
 ```bash
 cargo install thinkingroot
-```
-
-**From source**
-```bash
-git clone https://github.com/thinkingroot/thinkingroot
-cd thinkingroot
-cargo build --release
-./target/release/root --help
+# or: git clone && cd thinkingroot && cargo build --release
 ```
 
 **Python SDK**
@@ -631,7 +635,24 @@ cargo build --release
 pip install thinkingroot
 ```
 
-### First compile
+### 2. Interactive Setup Wizard
+
+The fastest way to get started is the interactive setup wizard, which handles all configuration, API keys, and tool plumbing for you:
+
+```bash
+root setup
+```
+
+The wizard will guide you through:
+1. **Selecting your LLM** (AWS Bedrock, OpenAI, Anthropic, local Ollama, Groq, etc.)
+2. **Setting your API key** or local base URL.
+3. **Registering your first workspace** (the directory you want to compile).
+4. **Auto-wiring MCP** into your installed tools (Claude Desktop, Cursor, VS Code, Zed).
+5. **Running your first compilation** automatically.
+
+### 3. Or Compile Manually
+
+If you've already set things up, just recompile your workspace whenever files change:
 
 ```bash
 # Point it at any directory — code, docs, notes, anything
@@ -642,13 +663,6 @@ root
 ```
 
 ThinkingRoot **respects `.gitignore` by default** — it never processes `node_modules`, `target`, `.git`, or anything you've told git to ignore.
-
-### Interactive setup wizard
-
-```bash
-root setup
-# 5 steps: LLM provider → API key → workspace → MCP wiring → first compile
-```
 
 ### Ask questions immediately
 

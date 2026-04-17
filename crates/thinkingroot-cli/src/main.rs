@@ -1034,7 +1034,7 @@ fn print_banner() {
     println!("  {}", style("ThinkingRoot").green().bold());
     println!(
         "  {}",
-        style("The open-source knowledge compiler for AI agents").dim()
+        style("Compiled knowledge infrastructure for AI agents — works like a secondary brain.").dim()
     );
     println!();
 }
