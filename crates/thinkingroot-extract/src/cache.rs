@@ -5,7 +5,7 @@ use thinkingroot_core::{Error, Result};
 
 /// Version tag included in cache keys. Bump this constant when extraction
 /// prompts change to automatically invalidate all stale cache entries.
-const PROMPT_VERSION: &str = "v2";
+const PROMPT_VERSION: &str = "v3";
 
 /// Content-addressable cache for LLM extraction results.
 ///
@@ -83,6 +83,7 @@ mod tests {
                 entities: vec!["Rust".into()],
                 source_quote: None,
                 extraction_tier: crate::schema::ExtractionTier::default(),
+                event_date: None,
             }],
             entities: vec![ExtractedEntity {
                 name: "Rust".into(),
