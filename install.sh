@@ -1,10 +1,9 @@
 #!/bin/sh
 # ThinkingRoot installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/thinkingroot/thinkingroot/main/install.sh | sh
-# Or:    curl -fsSL https://thinkingroot.dev/install.sh | sh
+# Usage: curl -fsSL https://raw.githubusercontent.com/DevbyNaveen/ThinkingRoot/main/install.sh | sh
 set -e
 
-REPO="thinkingroot/thinkingroot"
+REPO="DevbyNaveen/ThinkingRoot"
 BINARY="root"
 INSTALL_DIR="${INSTALL_DIR:-}"
 

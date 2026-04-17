@@ -29,14 +29,13 @@
 
 ## Install
 
-**Build from source** (works today — Rust 1.85+):
+**macOS / Linux — one-line curl installer** (recommended):
 
 ```bash
-git clone https://github.com/DevbyNaveen/ThinkingRoot.git
-cd ThinkingRoot
-cargo build --release
-sudo mv target/release/root /usr/local/bin/root
+curl -fsSL https://raw.githubusercontent.com/DevbyNaveen/ThinkingRoot/main/install.sh | sh
 ```
+
+Downloads the correct pre-built binary for your OS and architecture, verifies the SHA256 checksum, and puts `root` in `/usr/local/bin`.
 
 **Homebrew** *(coming soon)*
 ```bash
@@ -48,12 +47,17 @@ brew install thinkingroot
 cargo install thinkingroot
 ```
 
-**Python SDK** *(coming soon)*
+**Build from source** (Rust 1.85+):
 ```bash
-pip install thinkingroot
+git clone https://github.com/DevbyNaveen/ThinkingRoot.git
+cd ThinkingRoot
+cargo build --release
+sudo mv target/release/root /usr/local/bin/root
 ```
 
-Then run:
+> **ONNX model:** `root` automatically downloads the embedding model (~30 MB) on first `root compile` — no manual setup needed. It's cached at `~/.cache/thinkingroot/models/` and reused across workspaces.
+
+Then get started:
 
 ```bash
 root setup        # interactive wizard: pick LLM, set API key, wire MCP
