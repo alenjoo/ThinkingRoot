@@ -12,6 +12,10 @@ use crate::prompts;
 use crate::scheduler::ThroughputScheduler;
 use crate::schema::ExtractionResult;
 
+/// Number of cache-miss chunks packed into a single LLM batch call.
+/// 6 × 2000-token chunks + system prompt ≈ 13k tokens — within 32k context limits.
+pub const EXTRACTION_BATCH_SIZE: usize = 6;
+
 type SharedLlm = Arc<LlmClient>;
 
 /// Callback fired after each original chunk is processed (cached or via LLM).
@@ -142,6 +146,7 @@ impl Extractor {
         // ── Pass 1: separate cache hits from LLM work ──────────────────
         // This gives us an accurate total_chunks denominator before any
         // progress events fire, without double-counting sub-chunks.
+        #[derive(Clone)]
         struct ChunkWork {
             source_id: SourceId,
             source_uri: String,
@@ -247,115 +252,103 @@ impl Extractor {
             );
         }
 
-        // ── Spawn LLM tasks — one task per original chunk ───────────────
-        // Sub-chunks are processed sequentially *within* each task so that
-        // progress fires once per original chunk, not once per sub-chunk.
-        // Concurrency is still bounded by the semaphore (one permit per
-        // sub-chunk LLM call, released after each call completes).
+        // ── Batch LLM calls — EXTRACTION_BATCH_SIZE cache-misses per call ──────────
+        // Cache hits were already processed above. Here we group remaining
+        // llm_work into batches of EXTRACTION_BATCH_SIZE and fire one LLM call
+        // per batch. Results split back per-chunk and cached individually.
+        //
+        // One semaphore permit = one batch call (not one chunk call).
+        let known_entities_section = self.known_entities.prompt_section();
         let mut join_set = tokio::task::JoinSet::new();
 
-        // Compute the graph-primed context section once; cloned into each task.
-        let known_entities_section = self.known_entities.prompt_section();
-
-        for work in llm_work {
+        for batch_work in llm_work.chunks(EXTRACTION_BATCH_SIZE) {
+            let batch_work: Vec<_> = batch_work.to_vec();
             let llm = Arc::clone(&self.llm);
             let sem = Arc::clone(&semaphore);
             let graph_ctx = known_entities_section.clone();
 
             join_set.spawn(async move {
-                let source_id = work.source_id;
-                let source_uri = work.source_uri;
-                let original_content = work.original_content;
-                let mut sub_results: Vec<(String, ExtractionResult)> = Vec::new();
+                let _permit = sem.acquire().await.ok()?;
 
-                // Prepend AST anchor (if any) to the graph-primed context so the LLM
-                // is anchored to the exact entity names AST already extracted — one
-                // coherent pipeline instead of two blind parallel lanes.
-                let combined_ctx = if work.ast_anchor.is_empty() {
-                    graph_ctx
-                } else {
-                    format!("{}\n\n{}", work.ast_anchor, graph_ctx)
-                };
-
-                for sub_content in work.sub_chunks {
-                    let _permit = sem.acquire().await.ok()?;
-                    match extract_with_split(
-                        Arc::clone(&llm),
-                        sub_content.clone(),
-                        work.context.clone(),
-                        combined_ctx.clone(),
-                        0,
-                    )
-                    .await
-                    {
-                        Ok(r) => sub_results.push((sub_content, r)),
-                        Err(e) => {
-                            tracing::warn!("extraction failed for chunk in {source_uri}: {e}");
+                // Build batch chunks — combine ast_anchor with graph context per chunk.
+                let batch_chunks: Vec<crate::batch::BatchChunk> = batch_work
+                    .iter()
+                    .enumerate()
+                    .map(|(i, work)| {
+                        let combined_ctx = if work.ast_anchor.is_empty() {
+                            graph_ctx.clone()
+                        } else {
+                            format!("{}\n\n{}", work.ast_anchor, graph_ctx)
+                        };
+                        crate::batch::BatchChunk {
+                            id: i,
+                            content: work.sub_chunks.join("\n"),
+                            context: work.context.clone(),
+                            ast_anchor: combined_ctx,
                         }
+                    })
+                    .collect();
+
+                let expected_ids: Vec<usize> = (0..batch_chunks.len()).collect();
+                let batch_prompt = crate::batch::build_batch_prompt(&batch_chunks, &graph_ctx);
+
+                match llm.extract_batch_raw(&batch_prompt).await {
+                    Ok(raw_response) => {
+                        let batch_results =
+                            crate::batch::parse_batch_response(&raw_response, &expected_ids);
+                        Some((batch_work, batch_results))
+                    }
+                    Err(e) => {
+                        tracing::warn!("batch extraction failed: {e}");
+                        None
                     }
                 }
-
-                if sub_results.is_empty() {
-                    return None;
-                }
-                Some((source_id, source_uri, original_content, sub_results))
             });
         }
 
-        // ── Collect in completion order (JoinSet.join_next) ─────────────
-        // JoinSet yields results as each task finishes, giving smooth
-        // progress updates rather than awaiting in spawn order.
+        // ── Collect batch results ──────────────────────────────────────────
         while let Some(join_result) = join_set.join_next().await {
-            if let Ok(Some((source_id, source_uri, original_content, sub_results))) = join_result {
-                if let Some(ref cache) = self.cache {
-                    // Write each sub-chunk result under its own key.
-                    for (sub_content, extraction_result) in &sub_results {
-                        if let Err(e) = cache.put(sub_content, extraction_result) {
-                            tracing::warn!("failed to write extraction cache entry: {e}");
-                        }
+            if let Ok(Some((batch_work, batch_results))) = join_result {
+                for chunk_result in batch_results {
+                    if chunk_result.id >= batch_work.len() {
+                        continue;
                     }
-                    // Also write the merged result under the original chunk key so that
-                    // split chunks hit the cache on subsequent runs (the lookup key is
-                    // always the original full chunk content, not the sub-chunk content).
-                    if sub_results.len() > 1
-                        || sub_results
-                            .first()
-                            .map(|(c, _)| c != &original_content)
-                            .unwrap_or(false)
-                    {
-                        let merged = ExtractionResult {
-                            claims: sub_results
-                                .iter()
-                                .flat_map(|(_, r)| r.claims.clone())
-                                .collect(),
-                            entities: sub_results
-                                .iter()
-                                .flat_map(|(_, r)| r.entities.clone())
-                                .collect(),
-                            relations: sub_results
-                                .iter()
-                                .flat_map(|(_, r)| r.relations.clone())
-                                .collect(),
-                        };
-                        if let Err(e) = cache.put(&original_content, &merged) {
-                            tracing::warn!("failed to write merged cache entry: {e}");
-                        }
-                    }
-                }
+                    let work = &batch_work[chunk_result.id];
+                    let extraction_result = chunk_result.result;
 
-                for (_, extraction_result) in sub_results {
+                    // Write per-chunk cache entries.
+                    if let Some(ref cache) = self.cache {
+                        for sub_content in &work.sub_chunks {
+                            if let Err(e) = cache.put(sub_content, &extraction_result) {
+                                tracing::warn!("failed to write extraction cache entry: {e}");
+                            }
+                        }
+                        // Also write under the original full-chunk key for split chunks.
+                        let needs_original_key = work.sub_chunks.len() > 1
+                            || work
+                                .sub_chunks
+                                .first()
+                                .map(|c| c != &work.original_content)
+                                .unwrap_or(false);
+                        if needs_original_key {
+                            if let Err(e) = cache.put(&work.original_content, &extraction_result) {
+                                tracing::warn!("failed to write original cache entry: {e}");
+                            }
+                        }
+                    }
+
                     let converted = Self::convert_result_static(
                         extraction_result,
-                        source_id,
+                        work.source_id,
                         workspace_id,
                         min_confidence,
                     );
                     output.merge(converted);
-                }
-                output.chunks_processed += 1;
-                done += 1;
-                if let Some(ref pf) = self.progress {
-                    pf(done, total_chunks, &source_uri);
+                    output.chunks_processed += 1;
+                    done += 1;
+                    if let Some(ref pf) = self.progress {
+                        pf(done, total_chunks, &work.source_uri);
+                    }
                 }
             }
         }
@@ -411,9 +404,17 @@ impl Extractor {
                 continue;
             }
             let claim_type = parse_claim_type(&ext_claim.claim_type);
-            let claim = Claim::new(&ext_claim.statement, claim_type, source_id, workspace_id)
+            let mut claim = Claim::new(&ext_claim.statement, claim_type, source_id, workspace_id)
                 .with_confidence(ext_claim.confidence)
                 .with_extraction_tier(ext_claim.extraction_tier);
+            // Wire event_date: convert ISO string → DateTime<Utc>.
+            if let Some(ref date_str) = ext_claim.event_date {
+                if let Ok(nd) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+                    if let Some(dt) = nd.and_hms_opt(12, 0, 0).map(|ndt| ndt.and_utc()) {
+                        claim = claim.with_event_date(dt);
+                    }
+                }
+            }
             if !ext_claim.entities.is_empty() {
                 output
                     .claim_entity_names
@@ -611,6 +612,7 @@ fn parse_claim_type(s: &str) -> ClaimType {
         "dependency" => ClaimType::Dependency,
         "api_signature" => ClaimType::ApiSignature,
         "architecture" => ClaimType::Architecture,
+        "preference" => ClaimType::Preference,
         _ => ClaimType::Fact,
     }
 }
@@ -657,6 +659,11 @@ fn parse_relation_type(s: &str) -> Option<RelationType> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batch_size_constant_is_six() {
+        assert_eq!(EXTRACTION_BATCH_SIZE, 6, "batch size must be 6 — see perf analysis");
+    }
 
     #[test]
     fn split_to_token_budget_no_split_needed() {
