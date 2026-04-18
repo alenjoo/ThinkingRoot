@@ -112,8 +112,6 @@ select_install_dir() {
 # ── Model cache dir ───────────────────────────────────────────────────────────
 
 model_cache_dir() {
-  # macOS: ~/Library/Caches/thinkingroot/models
-  # Linux: ~/.cache/thinkingroot/models
   if [ "$(uname -s)" = "Darwin" ]; then
     echo "${HOME}/Library/Caches/thinkingroot/models"
   else
@@ -140,7 +138,6 @@ install_nli_models() {
 
   mkdir -p "$MODEL_DIR" || err "Cannot create model cache dir: $MODEL_DIR"
 
-  # Download ONNX model
   if [ -f "${MODEL_DIR}/${ONNX_FILE}" ]; then
     say_dim "NLI model already cached: ${MODEL_DIR}/${ONNX_FILE}"
   else
@@ -150,7 +147,6 @@ install_nli_models() {
     say_dim "Saved to ${MODEL_DIR}/${ONNX_FILE}"
   fi
 
-  # Download tokenizer
   if [ -f "${MODEL_DIR}/tokenizer.json" ]; then
     say_dim "Tokenizer already cached."
   else
@@ -171,7 +167,15 @@ main() {
   OS="$(detect_os)"
   ARCH="$(detect_arch)"
   INSTALL_DIR="$(select_install_dir)"
-  ASSET="${BINARY}-${OS}-${ARCH}"
+
+  # macOS Intel ships as a tar.gz bundle (binary + ONNX Runtime dylib)
+  if [ "$OS" = "macos" ] && [ "$ARCH" = "amd64" ]; then
+    ASSET="${BINARY}-${OS}-${ARCH}.tar.gz"
+    IS_BUNDLE=1
+  else
+    ASSET="${BINARY}-${OS}-${ARCH}"
+    IS_BUNDLE=0
+  fi
 
   say "Detecting latest version..."
   VERSION="${VERSION:-$(fetch_latest_version)}"
@@ -204,9 +208,16 @@ main() {
   fi
   say "Checksum OK"
 
-  chmod +x "$ASSET_PATH"
-  mv "$ASSET_PATH" "${INSTALL_DIR}/${BINARY}"
-  say "Installed: ${INSTALL_DIR}/${BINARY}"
+  if [ "$IS_BUNDLE" = "1" ]; then
+    # Extract binary + ONNX Runtime dylib both to INSTALL_DIR
+    tar -xzf "$ASSET_PATH" -C "$INSTALL_DIR"
+    chmod +x "${INSTALL_DIR}/${BINARY}"
+    say "Installed: ${INSTALL_DIR}/${BINARY} (+ libonnxruntime dylib)"
+  else
+    chmod +x "$ASSET_PATH"
+    mv "$ASSET_PATH" "${INSTALL_DIR}/${BINARY}"
+    say "Installed: ${INSTALL_DIR}/${BINARY}"
+  fi
 
   # PATH hint
   case "$INSTALL_DIR" in

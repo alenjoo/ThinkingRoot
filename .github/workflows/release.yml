@@ -19,43 +19,90 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact: root-linux-amd64
+
+          # ort has a prebuilt static binary for aarch64-unknown-linux-gnu;
+          # cross downloads it during the build just like x86_64-linux.
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             artifact: root-linux-arm64
             cross: true
-            no_vector: true
+
+          # ort 2.0.0-rc.11 dropped the prebuilt binary for x86_64-apple-darwin.
+          # We download Microsoft's official ORT 1.23.2 dylib, build with
+          # ORT_LIB_LOCATION + ORT_PREFER_DYNAMIC_LINK=1, then embed
+          # @executable_path rpath and bundle binary + dylib as a tar.gz.
           - os: macos-13
             target: x86_64-apple-darwin
-            artifact: root-macos-amd64
+            artifact: root-macos-amd64.tar.gz
+            ort_manual: true
+
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact: root-macos-arm64
+
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: root-windows-amd64.exe
 
     steps:
       - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
 
+      # ── Linux ARM64: install cross ─────────────────────────────────────────
       - name: Install cross (Linux ARM64)
         if: matrix.cross
         run: cargo install cross --git https://github.com/cross-rs/cross
 
+      # ── macOS Intel: download ORT 1.23.2 dylib and set env ────────────────
+      - name: Download ONNX Runtime 1.23.2 (macOS Intel)
+        if: matrix.ort_manual
+        run: |
+          ORT_VERSION="1.23.2"
+          TARBALL="onnxruntime-osx-x86_64-${ORT_VERSION}.tgz"
+          curl -fsSL \
+            "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${TARBALL}" \
+            -o "/tmp/${TARBALL}"
+          tar -xzf "/tmp/${TARBALL}" -C /tmp
+          ORT_LIB="/tmp/onnxruntime-osx-x86_64-${ORT_VERSION}/lib"
+          echo "ORT_LIB_LOCATION=${ORT_LIB}"        >> "$GITHUB_ENV"
+          echo "ORT_PREFER_DYNAMIC_LINK=1"           >> "$GITHUB_ENV"
+          # Store for post-build packaging
+          echo "ORT_LIB_DIR=${ORT_LIB}"              >> "$GITHUB_ENV"
+
+      # ── Build ──────────────────────────────────────────────────────────────
       - name: Build (native)
         if: ${{ !matrix.cross }}
         run: cargo build --release --target ${{ matrix.target }} -p thinkingroot-cli
 
-      - name: Build (cross, no vector)
-        if: ${{ matrix.cross && matrix.no_vector }}
-        run: cross build --release --no-default-features --target ${{ matrix.target }} -p thinkingroot-cli
+      - name: Build (cross, Linux ARM64 — full features)
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }} -p thinkingroot-cli
 
+      # ── macOS Intel post-build: embed rpath + bundle with dylib ───────────
+      - name: Bundle binary + ORT dylib (macOS Intel)
+        if: matrix.ort_manual
+        run: |
+          BIN="target/${{ matrix.target }}/release/root"
+          DYLIB="${ORT_LIB_DIR}/libonnxruntime.1.23.2.dylib"
+
+          # Embed @executable_path so the binary finds the dylib next to itself
+          install_name_tool -add_rpath @executable_path "$BIN"
+
+          # Package binary + versioned dylib together
+          tar czf root-macos-amd64.tar.gz \
+            -C "target/${{ matrix.target }}/release" root \
+            -C "$ORT_LIB_DIR" libonnxruntime.1.23.2.dylib libonnxruntime.dylib
+
+      # ── Rename plain binaries (all non-bundle platforms) ──────────────────
       - name: Rename binary
+        if: ${{ !matrix.ort_manual }}
         shell: bash
         run: |
           BIN=target/${{ matrix.target }}/release/root
@@ -85,12 +132,12 @@ jobs:
       - name: Generate checksums.txt
         run: |
           cd artifacts
-          for f in root-linux-amd64 root-linux-arm64 root-macos-amd64 root-macos-arm64 root-windows-amd64.exe; do
+          for f in root-linux-amd64 root-linux-arm64 "root-macos-amd64.tar.gz" root-macos-arm64 root-windows-amd64.exe; do
             [ -f "$f" ] || { echo "Missing artifact: $f"; exit 1; }
           done
           sha256sum root-linux-amd64 \
                     root-linux-arm64 \
-                    root-macos-amd64 \
+                    "root-macos-amd64.tar.gz" \
                     root-macos-arm64 \
                     root-windows-amd64.exe \
             > checksums.txt
@@ -106,7 +153,7 @@ jobs:
           files: |
             artifacts/root-linux-amd64
             artifacts/root-linux-arm64
-            artifacts/root-macos-amd64
+            artifacts/root-macos-amd64.tar.gz
             artifacts/root-macos-arm64
             artifacts/root-windows-amd64.exe
             artifacts/checksums.txt
