@@ -151,8 +151,16 @@ pub async fn execute_merge(
                 let mut candidate_entities = HashSet::new();
 
                 for (sid, _, _) in main_graph.find_sources_by_uri(&uri).unwrap_or_default() {
-                    candidate_claims.extend(main_graph.get_claim_ids_for_source(&sid).unwrap_or_default());
-                    candidate_entities.extend(main_graph.get_entity_ids_for_source(&sid).unwrap_or_default());
+                    candidate_claims.extend(
+                        main_graph
+                            .get_claim_ids_for_source(&sid)
+                            .unwrap_or_default(),
+                    );
+                    candidate_entities.extend(
+                        main_graph
+                            .get_entity_ids_for_source(&sid)
+                            .unwrap_or_default(),
+                    );
                 }
 
                 let removed = main_graph.remove_source_by_uri(&uri)?;
