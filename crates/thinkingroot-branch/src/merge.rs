@@ -150,6 +150,7 @@ pub async fn execute_merge(
                 let mut candidate_claims = Vec::new();
                 let mut candidate_entities = HashSet::new();
 
+                // Note: we use `unwrap_or_default()` here to treat "source not found" as no-op during deletion propagation.
                 for (sid, _, _) in main_graph.find_sources_by_uri(&uri).unwrap_or_default() {
                     candidate_claims.extend(
                         main_graph
