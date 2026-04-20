@@ -161,7 +161,7 @@ pub async fn run_pipeline(
         if storage.vector.is_empty() {
             tracing::info!("vector index empty on early-exit — rebuilding from graph");
             let (ent_count, clm_count) =
-                update_vector_index_full_with_progress(&mut storage, &progress)?;
+                update_vector_index_full_with_progress(&mut storage, &progress).await?;
             emit!(ProgressEvent::VectorUpdateDone {
                 entities_indexed: ent_count,
                 claims_indexed: clm_count,
@@ -392,18 +392,13 @@ pub async fn run_pipeline(
                 g
             }
         };
-        // block_in_place: grounder.ground() is a long synchronous CPU/ONNX operation.
-        // Telling tokio this thread will block lets it keep the spawned bar_driver task
-        // and other async work scheduled on the remaining threads.
-        let mut grounded = tokio::task::block_in_place(|| {
-            grounder.ground(
-                extraction,
-                #[cfg(feature = "vector")]
-                Some(&mut storage.vector),
-                #[cfg(feature = "vector")]
-                nli_pool.as_ref(),
-            )
-        });
+        let mut grounded = grounder.ground(
+            extraction,
+            #[cfg(feature = "vector")]
+            Some(&mut storage.vector),
+            #[cfg(feature = "vector")]
+            nli_pool.as_ref(),
+        ).await;
         thinkingroot_ground::dedup::dedup_claims(&mut grounded.claims);
         let post_count = grounded.claims.len();
         if pre_count != post_count {
@@ -558,7 +553,7 @@ pub async fn run_pipeline(
         });
 
         let (ent_count, clm_count) =
-            update_vector_index_full_with_progress(&mut storage, &progress)?;
+            update_vector_index_full_with_progress(&mut storage, &progress).await?;
         emit!(ProgressEvent::VectorUpdateDone {
             entities_indexed: ent_count,
             claims_indexed: clm_count,
@@ -813,7 +808,7 @@ pub async fn run_pipeline(
             0,
             total_vec,
             &progress,
-        )?;
+        ).await?;
         upsert_with_vector_progress(
             &mut storage.vector,
             &new_claim_items,
@@ -821,7 +816,7 @@ pub async fn run_pipeline(
             ent_count,
             total_vec,
             &progress,
-        )?;
+        ).await?;
         storage.vector.save()?;
 
         tracing::info!(
@@ -837,7 +832,7 @@ pub async fn run_pipeline(
     } else {
         // Deletions occurred — full rebuild to correctly handle orphaned entries.
         let (ent_count, clm_count) =
-            update_vector_index_full_with_progress(&mut storage, &progress)?;
+            update_vector_index_full_with_progress(&mut storage, &progress).await?;
         emit!(ProgressEvent::VectorUpdateDone {
             entities_indexed: ent_count,
             claims_indexed: clm_count,
@@ -896,7 +891,7 @@ pub async fn run_pipeline(
 /// Chunk `items` into batches of `chunk_size`, calling `upsert_batch` per chunk
 /// and emitting `VectorProgress` events.  `offset` is added to the running
 /// `done` counter so that entity and claim passes share a single progress bar.
-fn upsert_with_vector_progress(
+async fn upsert_with_vector_progress(
     vector: &mut thinkingroot_graph::vector::VectorStore,
     items: &[(String, String, String)],
     chunk_size: usize,
@@ -906,7 +901,7 @@ fn upsert_with_vector_progress(
 ) -> Result<usize> {
     let mut done = 0usize;
     for chunk in items.chunks(chunk_size) {
-        vector.upsert_batch(chunk)?;
+        vector.upsert_batch(chunk).await?;
         done += chunk.len();
         if let Some(tx) = progress {
             let _ = tx.send(ProgressEvent::VectorProgress {
@@ -918,7 +913,7 @@ fn upsert_with_vector_progress(
     Ok(done)
 }
 
-fn update_vector_index_full_with_progress(
+async fn update_vector_index_full_with_progress(
     storage: &mut StorageEngine,
     progress: &Option<tokio::sync::mpsc::UnboundedSender<ProgressEvent>>,
 ) -> Result<(usize, usize)> {
@@ -952,7 +947,7 @@ fn update_vector_index_full_with_progress(
     let total = entity_items.len() + claim_items.len();
 
     let entity_count =
-        upsert_with_vector_progress(&mut storage.vector, &entity_items, 512, 0, total, progress)?;
+        upsert_with_vector_progress(&mut storage.vector, &entity_items, 512, 0, total, progress).await?;
     let claim_count = upsert_with_vector_progress(
         &mut storage.vector,
         &claim_items,
@@ -960,7 +955,7 @@ fn update_vector_index_full_with_progress(
         entity_count,
         total,
         progress,
-    )?;
+    ).await?;
     storage.vector.save()?;
 
     Ok((entity_count, claim_count))

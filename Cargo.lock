@@ -4577,6 +4577,7 @@ dependencies = [
  "thinkingroot-extract",
  "thinkingroot-graph",
  "tokenizers",
+ "tokio",
  "tracing",
  "unicode-segmentation",
 ]

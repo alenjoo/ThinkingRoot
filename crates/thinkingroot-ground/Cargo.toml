@@ -33,3 +33,4 @@ dirs = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+tokio = { workspace = true }

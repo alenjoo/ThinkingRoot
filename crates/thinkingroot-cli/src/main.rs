@@ -764,7 +764,7 @@ async fn run_query(path: &PathBuf, query: &str, top_k: usize) -> anyhow::Result<
     );
     println!();
 
-    let results = storage.vector.search(query, top_k)?;
+    let results = storage.vector.search(query, top_k).await?;
 
     if results.is_empty() {
         println!("  {} No results found.", style("!").yellow());

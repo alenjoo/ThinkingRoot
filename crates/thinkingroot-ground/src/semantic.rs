@@ -19,9 +19,9 @@ impl SemanticJudge {
     /// - > 0.7: claim is semantically close to source content
     /// - 0.4-0.7: partially related
     /// - < 0.4: likely off-topic / hallucinated
-    pub fn score(claim: &str, source_text: &str, vector_store: &mut VectorStore) -> f64 {
+    pub async fn score(claim: &str, source_text: &str, vector_store: &mut VectorStore) -> f64 {
         let texts = vec![claim, source_text];
-        match vector_store.embed_texts(&texts) {
+        match vector_store.embed_texts(&texts).await {
             Ok(embeddings) if embeddings.len() == 2 => {
                 cosine_similarity(&embeddings[0], &embeddings[1])
             }
@@ -41,7 +41,7 @@ impl SemanticJudge {
     /// Flattens pairs into `[claim₀, src₀, claim₁, src₁, …]`, calls
     /// `embed_texts` once, then pairs up the resulting vectors.
     /// Falls back to 0.5 (neutral) for any pair where embedding is missing.
-    pub fn score_batch(pairs: &[(&str, &str)], vector_store: &mut VectorStore) -> Vec<f64> {
+    pub async fn score_batch(pairs: &[(&str, &str)], vector_store: &mut VectorStore) -> Vec<f64> {
         if pairs.is_empty() {
             return vec![];
         }
@@ -49,7 +49,7 @@ impl SemanticJudge {
         // Flatten: [claim0, src0, claim1, src1, ...]
         let texts: Vec<&str> = pairs.iter().flat_map(|(c, s)| [*c, *s]).collect();
 
-        match vector_store.embed_texts(&texts) {
+        match vector_store.embed_texts(&texts).await {
             Ok(embeddings) if embeddings.len() == texts.len() => pairs
                 .iter()
                 .enumerate()

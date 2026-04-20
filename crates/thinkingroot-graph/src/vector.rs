@@ -9,6 +9,8 @@ mod inner {
     use std::path::Path;
 
     use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+    use std::sync::Arc;
+    use tokio::sync::{Mutex, OnceCell};
     use thinkingroot_core::{Error, Result};
 
     /// Vector storage backed by fastembed for local neural embeddings.
@@ -19,8 +21,8 @@ mod inner {
     /// workspace (e.g. `root graph`) is instant — ONNX Runtime session
     /// creation is slow even when the model file is already cached on disk.
     pub struct VectorStore {
-        /// `None` until the first embed/search call; populated on demand.
-        model: Option<TextEmbedding>,
+        /// Initialised lazily or in background; shared Arc for async access.
+        model: Arc<OnceCell<Mutex<TextEmbedding>>>,
         /// Stored so the model can be initialised lazily without re-scanning.
         cache_dir: std::path::PathBuf,
         /// Map from ID → (embedding vector, metadata string).
@@ -57,37 +59,63 @@ mod inner {
             );
 
             Ok(Self {
-                model: None,
+                model: Arc::new(OnceCell::new()),
                 cache_dir,
                 index,
                 persist_path,
             })
         }
 
+        /// Trigger model loading in the background.
+        pub fn warm_up(&self) {
+            let model = self.model.clone();
+            let cache_dir = self.cache_dir.clone();
+            tokio::spawn(async move {
+                let _ = model.get_or_try_init(|| async {
+                    tokio::task::spawn_blocking(move || {
+                        tracing::info!("loading embedding model (background)…");
+                        TextEmbedding::try_new(
+                            InitOptions::new(EmbeddingModel::AllMiniLML6V2)
+                                .with_cache_dir(cache_dir)
+                                .with_show_download_progress(false),
+                        ).map(Mutex::new)
+                    })
+                    .await
+                    .map_err(|e| Error::GraphStorage(format!("model load task panicked: {e}")))?
+                    .map_err(|e| Error::GraphStorage(format!("failed to init embedding model: {e}")))
+                }).await;
+            });
+        }
+
         /// Ensure the ONNX model is loaded, initialising it on first call.
-        fn ensure_model(&mut self) -> Result<&mut TextEmbedding> {
-            if self.model.is_none() {
-                tracing::info!("loading embedding model (first use)…");
-                let model = TextEmbedding::try_new(
-                    InitOptions::new(EmbeddingModel::AllMiniLML6V2)
-                        .with_cache_dir(self.cache_dir.clone())
-                        .with_show_download_progress(false),
-                )
-                .map_err(|e| Error::GraphStorage(format!("failed to init embedding model: {e}")))?;
-                self.model = Some(model);
-                tracing::info!("embedding model loaded");
-            }
-            Ok(self.model.as_mut().unwrap())
+        async fn ensure_model(&self) -> Result<&Mutex<TextEmbedding>> {
+            let cache_dir = self.cache_dir.clone();
+            self.model.get_or_try_init(|| async {
+                tokio::task::spawn_blocking(move || {
+                    tracing::info!("loading embedding model (on-demand)…");
+                    TextEmbedding::try_new(
+                        InitOptions::new(EmbeddingModel::AllMiniLML6V2)
+                            .with_cache_dir(cache_dir)
+                            .with_show_download_progress(false),
+                    ).map(Mutex::new)
+                })
+                .await
+                .map_err(|e| Error::GraphStorage(format!("model load task panicked: {e}")))?
+                .map_err(|e| Error::GraphStorage(format!("failed to init embedding model: {e}")))
+            }).await
         }
 
         /// Embed and store a text with an ID and metadata string.
-        pub fn upsert(&mut self, id: &str, text: &str, metadata: &str) -> Result<()> {
-            let embeddings = self
-                .ensure_model()?
+        pub async fn upsert(&mut self, id: &str, text: &str, metadata: &str) -> Result<()> {
+            let model_lock = self.ensure_model().await?;
+            let mut model = model_lock.lock().await;
+            let mut embeddings = model
                 .embed(vec![text], None)
-                .map_err(|e| Error::GraphStorage(format!("embedding failed: {e}")))?;
+                .map_err(|e| Error::GraphStorage(format!("embedding failed: {e}")))?
+                .into_iter();
+            drop(model); // Release model lock before modifying self.index
 
-            if let Some(vec) = embeddings.into_iter().next() {
+            if let Some(vec) = embeddings.next() {
                 self.index
                     .insert(id.to_string(), (vec, metadata.to_string()));
             }
@@ -95,7 +123,7 @@ mod inner {
         }
 
         /// Embed and store a batch of texts.
-        pub fn upsert_batch(
+        pub async fn upsert_batch(
             &mut self,
             items: &[(String, String, String)], // (id, text, metadata)
         ) -> Result<usize> {
@@ -105,13 +133,16 @@ mod inner {
 
             let texts: Vec<&str> = items.iter().map(|(_, text, _)| text.as_str()).collect();
 
-            let embeddings = self
-                .ensure_model()?
+            let model_lock = self.ensure_model().await?;
+            let mut model = model_lock.lock().await;
+            let mut embeddings = model
                 .embed(texts, None)
-                .map_err(|e| Error::GraphStorage(format!("batch embedding failed: {e}")))?;
+                .map_err(|e| Error::GraphStorage(format!("batch embedding failed: {e}")))?
+                .into_iter();
+            drop(model); // Release model lock before modifying self.index
 
             let mut count = 0;
-            for (embedding, (id, _, metadata)) in embeddings.into_iter().zip(items.iter()) {
+            for (embedding, (id, _, metadata)) in embeddings.zip(items.iter()) {
                 self.index.insert(id.clone(), (embedding, metadata.clone()));
                 count += 1;
             }
@@ -121,8 +152,8 @@ mod inner {
 
         /// Search for the top-k most similar items to a query string.
         /// Returns (id, metadata, similarity_score) sorted by descending similarity.
-        pub fn search(&mut self, query: &str, top_k: usize) -> Result<Vec<(String, String, f32)>> {
-            self.search_scoped(query, top_k, None)
+        pub async fn search(&mut self, query: &str, top_k: usize) -> Result<Vec<(String, String, f32)>> {
+            self.search_scoped(query, top_k, None).await
         }
 
         /// Search with optional source URI scope.
@@ -134,7 +165,7 @@ mod inner {
         ///
         /// This powers per-user scoped retrieval in multi-user graphs: each eval question
         /// passes its `haystack_session_ids` so only that user's claims are considered.
-        pub fn search_scoped(
+        pub async fn search_scoped(
             &mut self,
             query: &str,
             top_k: usize,
@@ -144,10 +175,12 @@ mod inner {
                 return Ok(Vec::new());
             }
 
-            let query_embedding = self
-                .ensure_model()?
+            let model_lock = self.ensure_model().await?;
+            let mut model = model_lock.lock().await;
+            let query_embedding = model
                 .embed(vec![query], None)
                 .map_err(|e| Error::GraphStorage(format!("query embedding failed: {e}")))?;
+            drop(model); // Release model lock before accessing self.index
 
             let query_vec = match query_embedding.into_iter().next() {
                 Some(v) => v,
@@ -189,7 +222,6 @@ mod inner {
         /// All integers little-endian. This is ~4× smaller than JSON and loads
         /// without a temporary allocation spike.
         pub fn save(&self) -> Result<()> {
-            use std::io::Write;
 
             let mut buf = Vec::with_capacity(self.index.len() * 400);
             buf.extend_from_slice(b"TRVEC1\n");
@@ -265,8 +297,10 @@ mod inner {
 
         /// Embed texts and return raw embedding vectors.
         /// Used by the grounding system's semantic judge.
-        pub fn embed_texts(&mut self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-            self.ensure_model()?
+        pub async fn embed_texts(&mut self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+            let model_lock = self.ensure_model().await?;
+            let mut model = model_lock.lock().await;
+            model
                 .embed(texts.to_vec(), None)
                 .map_err(|e| Error::GraphStorage(format!("embedding failed: {e}")))
         }
@@ -462,15 +496,17 @@ mod inner {
             Ok(Self)
         }
 
-        pub fn upsert(&mut self, _id: &str, _text: &str, _metadata: &str) -> Result<()> {
+        pub fn warm_up(&self) {}
+
+        pub async fn upsert(&mut self, _id: &str, _text: &str, _metadata: &str) -> Result<()> {
             Ok(())
         }
 
-        pub fn upsert_batch(&mut self, _items: &[(String, String, String)]) -> Result<usize> {
+        pub async fn upsert_batch(&mut self, _items: &[(String, String, String)]) -> Result<usize> {
             Ok(0)
         }
 
-        pub fn search(
+        pub async fn search(
             &mut self,
             _query: &str,
             _top_k: usize,
@@ -478,7 +514,7 @@ mod inner {
             Ok(Vec::new())
         }
 
-        pub fn search_scoped(
+        pub async fn search_scoped(
             &mut self,
             _query: &str,
             _top_k: usize,
@@ -514,7 +550,7 @@ mod inner {
             true
         }
 
-        pub fn embed_texts(&mut self, _texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        pub async fn embed_texts(&mut self, _texts: &[&str]) -> Result<Vec<Vec<f32>>> {
             Ok(vec![])
         }
 

@@ -270,6 +270,7 @@ impl QueryEngine {
 
         let config = Config::load_merged(&root_path)?;
         let storage = StorageEngine::init(&data_dir).await?;
+        storage.vector.warm_up();
         let cache = KnowledgeGraph::load_from_graph(&storage.graph)?;
         let llm = match thinkingroot_extract::llm::LlmClient::new(&config.llm).await {
             Ok(client) => {
@@ -324,6 +325,7 @@ impl QueryEngine {
 
         let config = Config::load_merged(&root_path).unwrap_or_default();
         let storage = StorageEngine::init(&data_dir).await?;
+        storage.vector.warm_up();
         let cache = KnowledgeGraph::load_from_graph(&storage.graph)?;
         let llm = match thinkingroot_extract::llm::LlmClient::new(&config.llm).await {
             Ok(client) => Some(Arc::new(client)),
@@ -756,7 +758,7 @@ impl QueryEngine {
         // Phase 1: Vector search — brief storage lock, released immediately after.
         let vector_results = {
             let mut storage = handle.storage.lock().await;
-            storage.vector.search(query, top_k * 2)?
+            storage.vector.search(query, top_k * 2).await?
             // storage Mutex drops here
         };
 
@@ -888,7 +890,7 @@ impl QueryEngine {
         };
         let vector_results = {
             let mut storage = handle.storage.lock().await;
-            storage.vector.search_scoped(query, top_k * 3, scope)?
+            storage.vector.search_scoped(query, top_k * 3, scope).await?
         };
 
         let mut entity_hits: Vec<EntitySearchHit> = Vec::new();
@@ -1079,7 +1081,7 @@ impl QueryEngine {
         // ── 1. Search branch vector index ─────────────────────────────────────
         let branch_vector_hits: Vec<(String, String, f32)> = if branch_data_dir.exists() {
             match thinkingroot_graph::vector::VectorStore::init(&branch_data_dir).await {
-                Ok(mut bv) => bv.search(query, top_k * 2).unwrap_or_default(),
+                Ok(mut bv) => bv.search(query, top_k * 2).await.unwrap_or_default(),
                 Err(_) => vec![],
             }
         } else {
@@ -1435,7 +1437,7 @@ Rules: \
                                 )
                             })
                             .collect();
-                        if let Err(e) = branch_vector.upsert_batch(&items) {
+                        if let Err(e) = branch_vector.upsert_batch(&items).await {
                             tracing::warn!("branch vector upsert failed (non-fatal): {e}");
                         } else if let Err(e) = branch_vector.save() {
                             tracing::warn!("branch vector save failed (non-fatal): {e}");

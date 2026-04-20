@@ -76,7 +76,7 @@ impl Grounder {
     ///
     /// This keeps peak memory at ~1 source text + ONNX model (~600 MB)
     /// instead of all source texts (potentially several GB).
-    pub fn ground(
+    pub async fn ground(
         &self,
         mut extraction: ExtractionOutput,
         #[cfg(feature = "vector")] mut vector_store: Option<
@@ -192,7 +192,7 @@ impl Grounder {
                     Some(vs) if !ml_indices.is_empty() => {
                         let ml_pairs: Vec<(&str, &str)> =
                             ml_indices.iter().map(|&j| pairs[j]).collect();
-                        let raw = crate::semantic::SemanticJudge::score_batch(&ml_pairs, *vs);
+                        let raw = crate::semantic::SemanticJudge::score_batch(&ml_pairs, *vs).await;
                         let mut result = vec![None; chunk.len()];
                         for (k, &j) in ml_indices.iter().enumerate() {
                             result[j] = Some(raw[k]);
@@ -424,8 +424,8 @@ mod tests {
         output
     }
 
-    #[test]
-    fn grounded_claim_survives() {
+    #[tokio::test]
+    async fn grounded_claim_survives() {
         let src = SourceId::new();
         let extraction = make_extraction(
             vec![("PostgreSQL stores user data in tables", src)],
@@ -441,13 +441,13 @@ mod tests {
             None,
             #[cfg(feature = "vector")]
             None,
-        );
+        ).await;
         assert_eq!(result.claims.len(), 1);
         assert!(result.claims[0].grounding_score.unwrap() > 0.5);
     }
 
-    #[test]
-    fn hallucinated_claim_rejected() {
+    #[tokio::test]
+    async fn hallucinated_claim_rejected() {
         let src = SourceId::new();
         let extraction = make_extraction(
             vec![("Redis caches session tokens in memory", src)],
@@ -463,12 +463,12 @@ mod tests {
             None,
             #[cfg(feature = "vector")]
             None,
-        );
+        ).await;
         assert_eq!(result.claims.len(), 0);
     }
 
-    #[test]
-    fn source_quote_boosts_score() {
+    #[tokio::test]
+    async fn source_quote_boosts_score() {
         let src = SourceId::new();
         let mut extraction = make_extraction(
             vec![("PostgreSQL stores user data", src)],
@@ -491,8 +491,8 @@ mod tests {
         assert!(result.claims[0].grounding_score.unwrap() > 0.8);
     }
 
-    #[test]
-    fn low_grounding_reduces_confidence() {
+    #[tokio::test]
+    async fn low_grounding_reduces_confidence() {
         let src = SourceId::new();
         let extraction = make_extraction(
             vec![("PostgreSQL handles authentication and sessions", src)],
@@ -512,13 +512,13 @@ mod tests {
             None,
             #[cfg(feature = "vector")]
             None,
-        );
+        ).await;
         assert_eq!(result.claims.len(), 1);
         assert!(result.claims[0].confidence.value() < 0.8);
     }
 
-    #[test]
-    fn source_texts_freed_after_grounding() {
+    #[tokio::test]
+    async fn source_texts_freed_after_grounding() {
         let src = SourceId::new();
         let extraction = make_extraction(
             vec![("PostgreSQL stores data", src)],
@@ -531,7 +531,7 @@ mod tests {
             None,
             #[cfg(feature = "vector")]
             None,
-        );
+        ).await;
         // source_texts should be drained (removed) by the grounder
         assert!(result.source_texts.is_empty());
     }
