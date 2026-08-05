@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785828104128,
+  "lastUpdate": 1785916432735,
   "repoUrl": "https://github.com/alenjoo/ThinkingRoot",
   "entries": {
     "ThinkingRoot Benchmarks": [
@@ -20719,6 +20719,286 @@ window.BENCHMARK_DATA = {
             "name": "vector/upsert_batch_100/batch_100",
             "value": 14361,
             "range": "± 308",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "DevbyNaveen",
+            "username": "DevbyNaveen",
+            "email": "Naveenani2025@gmail.com"
+          },
+          "committer": {
+            "name": "DevbyNaveen",
+            "username": "DevbyNaveen",
+            "email": "Naveenani2025@gmail.com"
+          },
+          "id": "d790a14bf0743a1c579985fe3d302570b3e7d123",
+          "message": "feat(serve+desktop): refresh BrainView + invalidate engrams on merge-to-main\n\nCloses the post-merge staleness gap by reusing existing channels —\nzero new types, SSE events, or Tauri events.\n\nserve/rest.rs:\n- invalidate_engrams_for_root helper does workspace-name reverse\n  lookup via mounted_workspace_roots, then engram_manager\n  invalidate_workspace. Best-effort no-op when root not registered.\n- merge_branch_handler calls it unconditionally on Ok(diff)\n  (handler always targets main).\n- merge_into_branch_handler gates on target == \"main\" so cross-branch\n  merges don't churn engrams.\n\ndesktop/branch_extras.rs:\n- merge_landed_on_main pure predicate: kind == \"merged\" && into ==\n  \"main\". Extracted so the decision is testable without an AppHandle.\n- Subscriber emits \"workspaces-changed\" alongside \"branch-event\"\n  when true. BrainView's existing onWorkspacesChanged listener\n  refetches the brain snapshot — no UI change required.\n\nMirrors finalize_successful_compile's reconciliation: when main's\ngraph mutates, invalidate engrams + signal graph refresh on the same\nwires compile already uses.\n\nVerified:\n- cargo check -p thinkingroot-serve: zero new warnings.\n- cargo test -p thinkingroot-serve --lib: 912 passed, 0 failed.\n- cargo test branch_extras (desktop): 3 new tests pass\n  (merged_into_main, merged_into_other_branch, non_merge_event).",
+          "timestamp": "2026-05-21T02:13:44Z",
+          "url": "https://github.com/alenjoo/ThinkingRoot/commit/d790a14bf0743a1c579985fe3d302570b3e7d123"
+        },
+        "date": 1785916430761,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "graph/entity_lookup_by_name/medium",
+            "value": 17017,
+            "range": "± 107",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "graph/entity_search/medium",
+            "value": 5478242,
+            "range": "± 44634",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "graph/claims_for_entity/medium",
+            "value": 122962,
+            "range": "± 1018",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "graph/claims_by_type/medium",
+            "value": 113227906,
+            "range": "± 593617",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "graph/relations_for_entity/medium",
+            "value": 129134,
+            "range": "± 2368",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "graph/all_entities/medium",
+            "value": 7445254,
+            "range": "± 77615",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "graph/all_relations/medium",
+            "value": 63467128,
+            "range": "± 360982",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "graph/contradictions/medium",
+            "value": 401314,
+            "range": "± 2134",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "graph/source_hash_exists/medium",
+            "value": 721462,
+            "range": "± 4603",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "graph/get_counts/medium",
+            "value": 48124382,
+            "range": "± 191812",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "parser/rust/lines/100",
+            "value": 581792,
+            "range": "± 4550",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "parser/rust/lines/500",
+            "value": 2867164,
+            "range": "± 9268",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "parser/rust/lines/2000",
+            "value": 11653339,
+            "range": "± 51568",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "parser/python/lines/100",
+            "value": 533116,
+            "range": "± 3105",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "parser/python/lines/500",
+            "value": 2578659,
+            "range": "± 33943",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "parser/python/lines/2000",
+            "value": 10409103,
+            "range": "± 53040",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "parser/typescript/lines/100",
+            "value": 368752,
+            "range": "± 7364",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "parser/typescript/lines/500",
+            "value": 1810921,
+            "range": "± 13812",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "parser/typescript/lines/2000",
+            "value": 7042184,
+            "range": "± 124681",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "parser/markdown/lines/100",
+            "value": 32557,
+            "range": "± 162",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "parser/markdown/lines/500",
+            "value": 186051,
+            "range": "± 1547",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "parser/markdown/lines/2000",
+            "value": 1337863,
+            "range": "± 11052",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "serialization/entity_json_roundtrip",
+            "value": 1434,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "serialization/claim_json_roundtrip",
+            "value": 2561,
+            "range": "± 13",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "serialization/entity_vec_json/serialize/10",
+            "value": 6335,
+            "range": "± 38",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "serialization/entity_vec_json/deserialize/10",
+            "value": 7030,
+            "range": "± 36",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "serialization/entity_vec_json/serialize/100",
+            "value": 59858,
+            "range": "± 307",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "serialization/entity_vec_json/deserialize/100",
+            "value": 70648,
+            "range": "± 297",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "serialization/entity_vec_json/serialize/1000",
+            "value": 589725,
+            "range": "± 5970",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "serialization/entity_vec_json/deserialize/1000",
+            "value": 698655,
+            "range": "± 3071",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "serialization/claim_msgpack_roundtrip",
+            "value": 1724,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "serialization/claim_vec_msgpack/serialize/10",
+            "value": 6502,
+            "range": "± 103",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "serialization/claim_vec_msgpack/serialize/100",
+            "value": 54422,
+            "range": "± 446",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "serialization/claim_vec_msgpack/serialize/1000",
+            "value": 531643,
+            "range": "± 6621",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "serialization/blake3_hash/kb/1",
+            "value": 994,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "serialization/blake3_hash/kb/10",
+            "value": 3067,
+            "range": "± 24",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "serialization/blake3_hash/kb/100",
+            "value": 17446,
+            "range": "± 37",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "serialization/blake3_hash/kb/1000",
+            "value": 165276,
+            "range": "± 8621",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vector/cosine_search_top5/medium",
+            "value": 4016527,
+            "range": "± 22857",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vector/cosine_search_top10/medium",
+            "value": 4037973,
+            "range": "± 24989",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vector/cosine_search_top50/medium",
+            "value": 4018569,
+            "range": "± 23512",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vector/upsert_single/single",
+            "value": 92,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vector/upsert_batch_100/batch_100",
+            "value": 12541,
+            "range": "± 87",
             "unit": "ns/iter"
           }
         ]
